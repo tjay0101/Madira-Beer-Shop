@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Madira Beer Shop - Cashier</title>
+  <link rel="stylesheet" href="cashier.css"/>
+</head>
+
+<body>
+<script type="module" src="firebase-init.js"></script>
+  <!-- ✅ Load auth.js ONLY ONCE -->
+  <script src="auth.js"></script>
+  <script>
+    // ✅ only cashier allowed (or allow manager too if you want)
+    requireRole(["cashier", "manager"]);
+  </script>
+
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="chip ghost" id="btnViewSales">View Sales Log</button>
+      <div class="terminalTag">
+        <span class="dot"></span>
+        <span id="terminalName">Terminal 01</span>
+      </div>
+
+      <div class="searchWrap">
+        <span class="searchIcon">⌕</span>
+        <input id="searchInput" type="text" placeholder="Scan barcode or type product name..." />
+        <span class="kbd">↵</span>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="statusPill" id="syncStatus">READY</div>
+      <div class="operator">
+        <div class="opText">
+          <div class="opRole">Operator</div>
+          <div class="opName" id="cashierName">Cashier</div>
+        </div>
+        <div class="avatar" id="avatar">MB</div>
+      </div>
+
+      <!-- ✅ This ID matches cashier.js -->
+      <button class="chip danger" id="logoutBtn" type="button">Logout</button>
+    </div>
+  </header>
+
+  <!-- PAGE WRAP -->
+  <main class="shell">
+    <!-- LEFT NAV (CATEGORIES + SHIFT) -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brandTitle">Madira Beer Shop</div>
+        <div class="brandSub">Cashier</div>
+      </div>
+
+      <nav class="catNav" id="categoryList">
+        <!-- injected -->
+      </nav>
+
+      <div class="shiftBox">
+        <div class="shiftTitle">Shift Progress</div>
+        <div class="shiftBar"><div class="shiftFill" id="shiftFill"></div></div>
+        <div class="shiftMeta" id="shiftMeta">8h 12m remaining</div>
+      </div>
+    </aside>
+
+    <!-- CENTER CONTENT -->
+    <section class="content">
+
+      <!-- TAB HEADER (Terminal / Today Sales) -->
+      <div class="tabs">
+        <button class="tab active" id="tabTerminal" type="button">Terminal</button>
+        <button class="tab" id="tabSales" type="button">Today’s Sales</button>
+      </div>
+
+      <!-- =========================
+           SECTION A: TERMINAL
+      ========================== -->
+      <section class="view active" id="viewTerminal">
+        <div class="filters">
+          <div class="pillRow" id="subFilterRow">
+            <!-- injected -->
+          </div>
+        </div>
+
+        <div class="terminalGrid">
+          <!-- PRODUCTS -->
+          <div class="productsPanel">
+            <div class="productsGrid" id="productsGrid">
+              <!-- injected -->
+            </div>
+
+            <div class="bottomHints">
+              <div class="hint"><span class="kbdSmall">F1</span> Search</div>
+              <div class="hint"><span class="kbdSmall">F2</span> Categories</div>
+              <div class="hint"><span class="kbdSmall">Space</span> Checkout</div>
+            </div>
+          </div>
+
+          <!-- CART -->
+          <aside class="cartPanel">
+            <div class="cartHeader">
+              <div>
+                <div class="cartTitle">Current Order</div>
+                <div class="cartMeta" id="orderMeta">#—</div>
+              </div>
+              <button class="linkBtn danger" id="btnClearCart" type="button">CLEAR ALL</button>
+            </div>
+
+            <div class="cartItems" id="cartItems">
+              <!-- injected -->
+            </div>
+
+            <div class="cartTotals">
+              <div class="totRow">
+                <span>Subtotal</span><span id="subtotal">₹0.00</span>
+              </div>
+              <div class="totRow">
+                <span>Tax (8%)</span><span id="tax">₹0.00</span>
+              </div>
+              <div class="totRow total">
+                <span>Total Amount</span><span id="total">₹0.00</span>
+              </div>
+
+              <div class="cartActions">
+                <button class="chip" id="btnPromo" type="button">Promo</button>
+                <button class="chip" id="btnCustomer" type="button">Customer</button>
+              </div>
+
+              <button class="btnPrimary" id="btnCheckout" type="button">COMPLETE SALE</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- =========================
+           SECTION B: TODAY SALES
+      ========================== -->
+      <section class="view" id="viewSales">
+        <div class="salesTop">
+          <div class="salesHeader">
+            <div>
+              <div class="salesTitle">Today’s Sales</div>
+              <div class="salesDate" id="salesDate"></div>
+            </div>
+            <div class="salesActions">
+              <button class="chip gold" id="btnNewOrder" type="button">New Order</button>
+            </div>
+          </div>
+
+          <div class="kpis">
+            <div class="kpiCard">
+              <div class="kpiLabel">Total Sales</div>
+              <div class="kpiValue" id="kpiTotalSales">₹0.00</div>
+              <div class="kpiSub" id="kpiDelta">—</div>
+            </div>
+            <div class="kpiCard">
+              <div class="kpiLabel">Transactions</div>
+              <div class="kpiValue" id="kpiTransactions">0</div>
+              <div class="kpiSub" id="kpiAvgTicket">Avg ₹0.00 per ticket</div>
+            </div>
+            <div class="kpiCard">
+              <div class="kpiLabel">Top Seller</div>
+              <div class="kpiValue" id="kpiTopSeller">—</div>
+              <div class="kpiSub" id="kpiTopSellerSub">—</div>
+            </div>
+          </div>
+
+          <div class="salesFilters">
+            <div class="searchWrap salesSearch">
+              <span class="searchIcon">⌕</span>
+              <input id="salesSearch" type="text" placeholder="Search by Receipt ID (e.g. #POS-1024)" />
+            </div>
+            <button class="chip" id="fltCategory" type="button">All Categories</button>
+            <button class="chip" id="fltPayment" type="button">Payment: All</button>
+            <button class="chip" id="fltMore" type="button">More Filters</button>
+          </div>
+
+          <div class="tableCard">
+            <div class="tableHead">
+              <div class="th">ID</div>
+              <div class="th">Timestamp</div>
+              <div class="th">Items Sold</div>
+              <div class="th">Method</div>
+              <div class="th">Amount</div>
+              <div class="th">Status</div>
+              <div class="th">Action</div>
+            </div>
+            <div class="tableBody" id="salesTableBody">
+              <!-- injected -->
+            </div>
+            <div class="tableFoot" id="tableFoot">Showing 0 of 0 transactions</div>
+          </div>
+
+          <div class="salesBottomGrid">
+            <div class="chartCard">
+              <div class="chartTitle">Sales by Hour</div>
+              <div class="chart" id="chartBars">
+                <!-- injected -->
+              </div>
+              <div class="chartAxis">
+                <span>8AM</span><span>12PM</span><span>4PM</span><span>8PM</span>
+              </div>
+            </div>
+
+            <div class="statusCard">
+              <div class="statusTitle">Terminal Status</div>
+              <div class="statusSub">Ready for new orders. Your terminal is connected and synchronized.</div>
+              <button class="btnPrimary" id="btnGoTerminal" type="button">Go to Terminal</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <!-- CHECKOUT MODAL -->
+  <div class="modalOverlay hidden" id="checkoutOverlay" aria-hidden="true">
+    <div class="modal">
+      <div class="modalHead">
+        <div>
+          <div class="modalTitle">Complete Sale</div>
+          <div class="modalSub" id="checkoutTotalText">Total: ₹0.00</div>
+        </div>
+        <button class="iconBtn" id="closeCheckout" type="button">✕</button>
+      </div>
+
+      <div class="modalBody">
+        <div class="payGrid">
+          <button class="payBtn active" data-method="CARD" type="button">CARD</button>
+          <button class="payBtn" data-method="CASH" type="button">CASH</button>
+          <button class="payBtn" data-method="UPI" type="button">UPI</button>
+        </div>
+
+        <div class="cashBox hidden" id="cashBox">
+          <label class="label">Cash Received</label>
+          <input class="cashInput" id="cashReceived" type="number" min="0" step="0.01" placeholder="Enter cash amount" />
+          <div class="changeRow">
+            <span>Change</span>
+            <span id="cashChange">₹0.00</span>
+          </div>
+        </div>
+
+        <div class="receiptPreview" id="receiptPreview"></div>
+      </div>
+
+      <div class="modalFoot">
+        <button class="chip" id="btnPrint" type="button">Print</button>
+        <button class="btnPrimary" id="btnConfirmSale" type="button">Confirm Payment</button>
+      </div>
+    </div>
+  </div>
+  <!-- ✅ Load cashier.js once, at the end -->
+  <script src="cashier.js"></script>
+</body>
+</html>

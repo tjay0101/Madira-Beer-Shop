@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Madira Beer Shop - Admin</title>
+  <link rel="stylesheet" href="admin.css"/>
+</head>
+
+<body>
+
+  <!-- AUTH -->
+  <script src="auth.js"></script>
+  <script type="module" src="firebase-init.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      requireRole(["admin", "manager"]);
+    });
+  </script>
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">MB</div>
+      <div>
+        <div class="brandTitle">Madira Admin</div>
+        <div class="brandSub">Manager Role</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="navItem active" data-route="dashboard">🏠 Dashboard</button>
+      <button class="navItem" data-route="inventory">📦 Inventory (Stock)</button>
+      <button class="navItem" data-route="addProduct">➕ Add Product</button>
+      <button class="navItem" data-route="orders">🧾 Orders</button>
+      <button class="navItem" data-route="reports">📊 Reports</button>
+      <button class="navItem" data-route="settings">⚙️ Settings</button>
+    </nav>
+
+    <div class="sideFooter">
+      <button class="btn ghost danger" id="btnLogout">Log Out</button>
+      <div class="smallMuted">LocalStorage Based • v1</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="crumb" id="crumb">Dashboard</div>
+
+      <div class="topRight">
+        <div class="searchWrap">
+          <span class="searchIcon">⌕</span>
+          <input id="globalSearch" type="text" placeholder="Search products / barcode / orders..." />
+        </div>
+
+        <div class="userChip">
+          <div class="avatar" id="avatar">A</div>
+          <div>
+            <div class="userName" id="adminName">Admin</div>
+            <div class="userRole">Store Manager</div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ROUTES -->
+    <section class="route active" id="route-dashboard">
+      <div class="pageTitle">
+        <h1>Dashboard</h1>
+        <p>Overview of revenue, transactions and low stock alerts.</p>
+      </div>
+
+      <div class="kpiGrid">
+        <div class="kpiCard">
+          <div class="kpiHead">
+            <span class="kpiLabel">Today’s Revenue</span>
+            <span class="pill green" id="kpiRevDelta">+0%</span>
+          </div>
+          <div class="kpiValue" id="kpiTodayRevenue">₹0.00</div>
+          <div class="kpiSub" id="kpiRevSub">Based on today’s orders</div>
+        </div>
+
+        <div class="kpiCard">
+          <div class="kpiHead">
+            <span class="kpiLabel">Total Transactions</span>
+            <span class="pill blue" id="kpiTxDelta">+0%</span>
+          </div>
+          <div class="kpiValue" id="kpiTodayTx">0</div>
+          <div class="kpiSub" id="kpiAvgTicket">Avg ₹0.00 per ticket</div>
+        </div>
+
+        <div class="kpiCard">
+          <div class="kpiHead">
+            <span class="kpiLabel">Low Stock Alerts</span>
+            <span class="pill amber" id="kpiLowLabel">0 Items</span>
+          </div>
+          <div class="kpiValue" id="kpiLowCount">0</div>
+          <div class="kpiSub">Needs attention</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">Sales Trends (7 days)</div>
+              <div class="cardSub">Simple trend based on stored orders</div>
+            </div>
+            <div class="seg">
+              <button class="segBtn active" data-trend="weekly">Weekly</button>
+              <button class="segBtn" data-trend="monthly">Monthly</button>
+            </div>
+          </div>
+
+          <div class="chartWrap">
+            <canvas id="trendCanvas" width="900" height="280"></canvas>
+          </div>
+          <div class="legend">
+            <span class="dotL"></span> Revenue (₹)
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">Quick Actions</div>
+              <div class="cardSub">Common admin tasks</div>
+            </div>
+          </div>
+
+          <div class="qa">
+            <button class="qaBtn" id="qaAddProduct">➕ Add New Product</button>
+            <button class="qaBtn" id="qaInventory">📦 View Inventory</button>
+            <button class="qaBtn" id="qaExportOrders">⬇️ Export Orders CSV</button>
+          </div>
+
+          <div class="miniList">
+            <div class="miniTitle">Critical Low Stock</div>
+            <div id="criticalLowList" class="miniItems"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:14px;">
+        <div class="cardHead">
+          <div>
+            <div class="cardTitle">Recent Orders</div>
+            <div class="cardSub">Latest transactions from cashier</div>
+          </div>
+          <button class="btn ghost" id="btnViewAllOrders">View All</button>
+        </div>
+
+        <div class="table">
+          <div class="thead">
+            <div>Order ID</div>
+            <div>Time</div>
+            <div>Items</div>
+            <div>Amount</div>
+            <div>Status</div>
+            <div>Action</div>
+          </div>
+          <div class="tbody" id="dashOrdersBody"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- INVENTORY (STOCK) -->
+    <section class="route" id="route-inventory">
+      <div class="pageRow">
+        <div class="pageTitle">
+          <h1>Product Inventory</h1>
+          <p>Manage pricing, stock, and product details.</p>
+        </div>
+        <div class="pageActions">
+          <button class="btn" id="btnGoAddProduct">+ Add Product</button>
+        </div>
+      </div>
+
+      <div class="kpiGrid">
+        <div class="kpiCard">
+          <div class="kpiLabel">Total Products</div>
+          <div class="kpiValue" id="invTotalProducts">0</div>
+          <div class="kpiSub">Across all categories</div>
+        </div>
+        <div class="kpiCard">
+          <div class="kpiLabel">Low Stock Items</div>
+          <div class="kpiValue" id="invLowStock">0</div>
+          <div class="kpiSub">Below threshold</div>
+        </div>
+        <div class="kpiCard">
+          <div class="kpiLabel">Inventory Value</div>
+          <div class="kpiValue" id="invValue">₹0.00</div>
+          <div class="kpiSub">Price × stock (approx)</div>
+        </div>
+      </div>
+
+      <div class="filtersRow">
+        <div class="searchWrap">
+          <span class="searchIcon">⌕</span>
+          <input id="invSearch" type="text" placeholder="Search by name / barcode / id..." />
+        </div>
+
+        <select id="invCategoryFilter" class="select">
+          <option value="">All Categories</option>
+        </select>
+
+        <select id="invStatusFilter" class="select">
+          <option value="">All Status</option>
+          <option value="instock">In Stock</option>
+          <option value="low">Low Stock</option>
+          <option value="out">Out of Stock</option>
+        </select>
+
+        <button class="btn ghost" id="invMoreFilters">More Filters</button>
+      </div>
+
+      <div class="card">
+        <div class="table">
+          <div class="thead invHead">
+            <div>Product</div>
+            <div>Category</div>
+            <div>Price</div>
+            <div>Stock</div>
+            <div>Status</div>
+            <div>Actions</div>
+          </div>
+          <div class="tbody" id="invBody"></div>
+        </div>
+        <div class="tableFoot" id="invFoot">Showing 0 of 0</div>
+      </div>
+    </section>
+
+    <!-- ADD PRODUCT -->
+    <section class="route" id="route-addProduct">
+      <div class="pageRow">
+        <div class="pageTitle">
+          <h1>Add New Product</h1>
+          <p>Enter product details. This will appear in Cashier immediately after refresh.</p>
+        </div>
+        <div class="pageActions">
+          <button class="btn ghost" id="btnCancelAdd">Cancel</button>
+          <button class="btn" id="btnSaveProduct">Save Product</button>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">General Information</div>
+              <div class="cardSub">Basic product identity</div>
+            </div>
+          </div>
+
+          <div class="form">
+            <div class="field">
+              <label>Product Name *</label>
+              <input id="pName" type="text" placeholder="e.g. Kingfisher Strong 500ml" />
+            </div>
+
+            <div class="fieldRow">
+              <div class="field">
+                <label>Category *</label>
+                <select id="pCategory" class="select"></select>
+              </div>
+              <div class="field">
+                <label>Subcategory (optional)</label>
+                <input id="pSub" type="text" placeholder="e.g. Craft / Imported / Local" />
+              </div>
+            </div>
+
+            <div class="fieldRow">
+              <div class="field">
+                <label>Barcode / SKU *</label>
+                <input id="pBarcode" type="text" placeholder="Scan or enter code" />
+              </div>
+              <div class="field">
+                <label>Size / Variant</label>
+                <input id="pSize" type="text" placeholder="e.g. 330ml • 5%" />
+              </div>
+            </div>
+
+            <div class="field">
+              <label>Description (optional)</label>
+              <textarea id="pDesc" rows="3" placeholder="Brief description..."></textarea>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">Product Image (optional)</div>
+              <div class="cardSub">Stored in localStorage as DataURL</div>
+            </div>
+          </div>
+
+          <div class="uploadBox" id="uploadBox">
+            <input id="pImage" type="file" accept="image/*" hidden />
+            <div class="uploadInner">
+              <div class="uploadIcon">⬆️</div>
+              <div class="uploadText">Click to upload</div>
+              <div class="uploadHint">PNG/JPG recommended</div>
+            </div>
+          </div>
+
+          <div class="imgPreviewWrap hidden" id="imgPreviewWrap">
+            <img id="imgPreview" alt="Preview"/>
+            <button class="btn ghost danger" id="btnRemoveImage">Remove Image</button>
+          </div>
+
+          <div class="card" style="margin-top:14px; border:1px dashed rgba(17,24,39,.15);">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Bulk Entry (optional later)</div>
+                <div class="cardSub">We can add CSV import after base panel works.</div>
+              </div>
+            </div>
+            <div style="padding:14px; color:rgba(17,24,39,.6); font-size:13px;">
+              For now, add products one by one. We can add bulk import next.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:14px;">
+        <div class="cardHead">
+          <div>
+            <div class="cardTitle">Pricing & Inventory</div>
+            <div class="cardSub">Stock and selling price in INR</div>
+          </div>
+        </div>
+
+        <div class="form" style="padding-top:6px;">
+          <div class="fieldRow">
+            <div class="field">
+              <label>Selling Price (₹) *</label>
+              <input id="pPrice" type="number" min="0" step="0.01" placeholder="e.g. 120" />
+            </div>
+
+            <div class="field">
+              <label>GST Rate (%) *</label>
+              <input id="pGst" type="number" min="0" max="100" step="0.01" placeholder="e.g. 18" required />
+            </div>
+
+            <div class="field">
+              <label>Initial Stock *</label>
+              <input id="pStock" type="number" min="0" step="1" placeholder="e.g. 50" />
+            </div>
+
+            <div class="field">
+              <label>Low Stock Threshold</label>
+              <input id="pLow" type="number" min="0" step="1" placeholder="e.g. 10" />
+            </div>
+          </div>
+
+          <div class="note">
+            ✅ After saving: Cashier reads from <b>madira_products_v1</b> and will show it in the Add Order section.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ORDERS -->
+    <section class="route" id="route-orders">
+      <div class="pageRow">
+        <div class="pageTitle">
+          <h1>Orders</h1>
+          <p>Sales history log (from cashier).</p>
+        </div>
+        <div class="pageActions">
+          <button class="btn ghost" id="btnExportOrders">Export CSV</button>
+        </div>
+      </div>
+
+      <div class="kpiGrid">
+        <div class="kpiCard">
+          <div class="kpiLabel">Orders Today</div>
+          <div class="kpiValue" id="ordTodayCount">0</div>
+          <div class="kpiSub" id="ordTodayDelta">—</div>
+        </div>
+        <div class="kpiCard">
+          <div class="kpiLabel">Revenue Today</div>
+          <div class="kpiValue" id="ordTodayRevenue">₹0.00</div>
+          <div class="kpiSub" id="ordRevDelta">—</div>
+        </div>
+        <div class="kpiCard">
+          <div class="kpiLabel">Refunds (demo)</div>
+          <div class="kpiValue" id="ordRefunds">0</div>
+          <div class="kpiSub">If you add refunds later</div>
+        </div>
+      </div>
+
+      <div class="filtersRow">
+        <div class="searchWrap">
+          <span class="searchIcon">⌕</span>
+          <input id="ordSearch" type="text" placeholder="Search by Order ID / Cashier / Terminal..." />
+        </div>
+
+        <select id="ordCashier" class="select">
+          <option value="">Cashier: All</option>
+        </select>
+
+        <select id="ordStatus" class="select">
+          <option value="">Status: All</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="REFUNDED">Refunded</option>
+        </select>
+
+        <select id="ordPreset" class="select">
+          <option value="today">Today</option>
+          <option value="week">This Week</option>
+          <option value="month">This Month</option>
+          <option value="year">This Year</option>
+          <option value="all">All Time</option>
+          <option value="custom">Custom</option>
+        </select>
+
+        <input id="ordFrom" type="date" class="select">
+        <input id="ordTo" type="date" class="select">
+        <button class="btn ghost" id="ordApply">Apply</button>
+      </div>
+
+      <div class="card">
+        <div class="table">
+          <div class="thead ordHead">
+            <div>Transaction ID</div>
+            <div>Date & Time</div>
+            <div>Items Sold</div>
+            <div>Cashier</div>
+            <div>Total</div>
+            <div>Status</div>
+            <div>Action</div>
+          </div>
+          <div class="tbody" id="ordersBody"></div>
+        </div>
+        <div class="tableFoot" id="ordersFoot">Showing 0 of 0</div>
+      </div>
+    </section>
+
+    <!-- REPORTS -->
+    <section class="route" id="route-reports">
+      <div class="pageRow">
+        <div class="pageTitle">
+          <h1>Sales & Analytics</h1>
+          <p>Overview of sales performance, product trends, and revenue breakdown.</p>
+        </div>
+        <div class="pageActions">
+          <select id="repPreset" class="select">
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="week">This Week</option>
+            <option value="month">This Month</option>
+            <option value="year">This Year</option>
+            <option value="custom">Custom</option>
+          </select>
+
+          <input id="repFrom" type="date" class="select">
+          <input id="repTo" type="date" class="select">
+          <button class="btn ghost" id="repApply">Apply</button>
+
+          <button class="btn" id="repExport">Export Report</button>
+        </div>
+      </div>
+
+      <div class="kpiGrid">
+        <div class="kpiCard">
+          <div class="kpiHead">
+            <span class="kpiLabel">Total Revenue</span>
+            <span class="pill green" id="repRevDelta">+0%</span>
+          </div>
+          <div class="kpiValue" id="repTotalRevenue">₹0.00</div>
+        </div>
+
+        <div class="kpiCard">
+          <div class="kpiHead">
+            <span class="kpiLabel">Total Orders</span>
+            <span class="pill green" id="repOrdersDelta">+0%</span>
+          </div>
+          <div class="kpiValue" id="repTotalOrders">0</div>
+        </div>
+
+        <div class="kpiCard">
+          <div class="kpiHead">
+            <span class="kpiLabel">Avg Order Value</span>
+            <span class="pill red" id="repAovDelta">-0%</span>
+          </div>
+          <div class="kpiValue" id="repAov">₹0.00</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">Sales by Category</div>
+              <div class="cardSub">Revenue share (simple)</div>
+            </div>
+          </div>
+          <div class="donutWrap">
+            <canvas id="donutCanvas" width="360" height="360"></canvas>
+            <div class="donutLegend" id="donutLegend"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">Top 10 Best-Selling Products</div>
+              <div class="cardSub">By revenue (from orders)</div>
+            </div>
+            <button class="btn ghost" id="repViewAll">View All</button>
+          </div>
+
+          <div class="table">
+            <div class="thead topHead">
+              <div>Rank</div>
+              <div>Product</div>
+              <div>Category</div>
+              <div>Units</div>
+              <div>Revenue</div>
+            </div>
+            <div class="tbody" id="topProductsBody"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="route" id="route-settings">
+      <div class="pageTitle">
+        <h1>Settings</h1>
+        <p>Manage categories and admin config.</p>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">Categories</div>
+              <div class="cardSub">These appear on Cashier sidebar</div>
+            </div>
+          </div>
+
+          <div class="form">
+            <div class="fieldRow">
+              <div class="field">
+                <label>Category Name</label>
+                <input id="catName" type="text" placeholder="e.g. Beers" />
+              </div>
+              <div class="field">
+                <label>Icon (emoji)</label>
+                <input id="catIcon" type="text" placeholder="🍺" />
+              </div>
+              <div class="field" style="align-self:flex-end;">
+                <button class="btn" id="btnAddCategory">Add Category</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="miniList" style="padding:0 14px 14px;">
+            <div class="miniTitle">Current Categories</div>
+            <div id="catList" class="miniItems"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">System</div>
+              <div class="cardSub">Danger zone</div>
+            </div>
+          </div>
+
+          <div style="padding:14px;">
+            <button class="btn danger" id="btnResetAll">Reset ALL Data (Products / Categories / Orders)</button>
+            <div class="smallMuted" style="margin-top:10px;">
+              This will clear localStorage keys: madira_products_v1, madira_categories_v1, madira_orders_v1
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MODAL -->
+    <div class="modalOverlay hidden" id="modalOverlay" aria-hidden="true">
+      <div class="modal">
+        <div class="modalHead">
+          <div>
+            <div class="modalTitle" id="modalTitle">Edit Product</div>
+            <div class="modalSub" id="modalSub">Update details</div>
+          </div>
+          <button class="iconBtn" id="modalClose">✕</button>
+        </div>
+
+        <div class="modalBody" id="modalBody"></div>
+
+        <div class="modalFoot">
+          <button class="btn ghost danger" id="modalDelete">Delete</button>
+          <button class="btn" id="modalSave">Save Changes</button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script src="admin.js"></script>
+</body>
+</html>

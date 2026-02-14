@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Madira | Select Login</title>
+
+  <style>
+    :root{
+      /* ✅ Bright theme tokens */
+      --bg:#f6f7fb;
+      --card: rgba(255,255,255,.92);
+      --card2: rgba(255,255,255,.70);
+      --stroke: rgba(17,24,39,.10);
+      --text: rgba(17,24,39,.92);
+      --muted: rgba(17,24,39,.62);
+      --shadow: 0 22px 60px rgba(17,24,39,.12);
+      --radius: 22px;
+
+      /* Accent (change if your other pages use a different accent) */
+      --accent: #f97316;    /* orange */
+      --accent2:#fb923c;
+    }
+
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0}
+    body{
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      color:var(--text);
+      background:
+        radial-gradient(900px 520px at 15% 10%, rgba(249,115,22,.22), transparent 60%),
+        radial-gradient(900px 520px at 85% 20%, rgba(251,146,60,.18), transparent 60%),
+        radial-gradient(900px 520px at 40% 92%, rgba(59,130,246,.10), transparent 60%),
+        linear-gradient(180deg, #ffffff, var(--bg));
+      display:grid;
+      place-items:center;
+      padding:24px;
+    }
+
+    .shell{
+      width:min(920px, 100%);
+      display:grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap:18px;
+    }
+
+    @media (max-width: 820px){
+      .shell{grid-template-columns:1fr}
+    }
+
+    .card{
+      border:1px solid var(--stroke);
+      background: linear-gradient(180deg, var(--card), rgba(255,255,255,.86));
+      border-radius:var(--radius);
+      box-shadow:var(--shadow);
+      overflow:hidden;
+    }
+
+    .left{
+      padding:26px;
+      position:relative;
+      min-height:320px;
+    }
+
+    .brand{
+      display:flex;
+      align-items:center;
+      gap:12px;
+      margin-bottom:14px;
+    }
+    .logo{
+      width:44px;height:44px;border-radius:14px;
+      border:1px solid rgba(249,115,22,.28);
+      background: rgba(249,115,22,.10);
+      display:grid;place-items:center;
+      font-weight:900;
+      letter-spacing:.5px;
+      color: rgba(124,45,18,.95);
+    }
+    .title{
+      font-size:22px;
+      font-weight:900;
+      line-height:1.1;
+    }
+    .sub{
+      margin-top:6px;
+      color:var(--muted);
+      font-size:13px;
+      line-height:1.5;
+      max-width:52ch;
+    }
+
+    .pillRow{
+      margin-top:18px;
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+    }
+    .pill{
+      font-size:12px;
+      color: rgba(17,24,39,.82);
+      border:1px solid var(--stroke);
+      background: rgba(255,255,255,.75);
+      padding:8px 10px;
+      border-radius:999px;
+      box-shadow: 0 8px 20px rgba(17,24,39,.06);
+    }
+
+    .right{
+      padding:22px;
+      display:grid;
+      gap:12px;
+      align-content:start;
+      background:
+        radial-gradient(520px 220px at 30% 10%, rgba(249,115,22,.10), transparent 60%),
+        radial-gradient(520px 220px at 90% 80%, rgba(59,130,246,.08), transparent 60%);
+    }
+
+    .btn{
+      width:100%;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      padding:16px 16px;
+      border-radius:18px;
+      border:1px solid var(--stroke);
+      background: rgba(255,255,255,.86);
+      color:var(--text);
+      cursor:pointer;
+      transition: transform .08s ease, background .15s ease, border-color .15s ease, box-shadow .15s ease;
+      text-decoration:none;
+      user-select:none;
+      box-shadow: 0 12px 30px rgba(17,24,39,.06);
+    }
+    .btn:hover{
+      background: rgba(255,255,255,.96);
+      border-color: rgba(249,115,22,.26);
+      box-shadow: 0 16px 40px rgba(17,24,39,.10);
+    }
+    .btn:active{ transform:scale(.99) }
+
+    .btnMain{
+      font-weight:900;
+      font-size:15px;
+    }
+    .btnSub{
+      font-size:12px;
+      color:var(--muted);
+      margin-top:4px;
+    }
+    .btnLeft{
+      display:flex;
+      gap:12px;
+      align-items:flex-start;
+    }
+    .ico{
+      width:42px;height:42px;border-radius:16px;
+      display:grid;place-items:center;
+      border:1px solid rgba(249,115,22,.22);
+      background: rgba(249,115,22,.10);
+      flex:0 0 auto;
+      font-size:18px;
+    }
+    .arrow{
+      opacity:.7;
+      font-size:16px;
+      color: rgba(17,24,39,.75);
+    }
+
+    .note{
+      margin-top:8px;
+      font-size:12px;
+      color:var(--muted);
+      line-height:1.5;
+      border-top:1px solid var(--stroke);
+      padding-top:12px;
+    }
+
+    .footer{
+      margin-top:10px;
+      font-size:11px;
+      color: rgba(17,24,39,.55);
+    }
+
+    /* OPTIONAL highlight if last role selected */
+    .btn.last{
+      border-color: rgba(249,115,22,.35);
+      box-shadow: 0 18px 48px rgba(249,115,22,.12), 0 12px 30px rgba(17,24,39,.06);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="shell">
+    <div class="card left">
+      <div class="brand">
+        <div class="logo">M</div>
+        <div>
+          <div class="title">Madira POS</div>
+          <div class="sub">
+            Choose how you want to log in. Cashier is for billing and order placement.
+            Admin is for inventory, orders, reports, and settings.
+          </div>
+        </div>
+      </div>
+
+      <div class="pillRow">
+        <div class="pill">⚡ Fast billing</div>
+        <div class="pill">📦 Inventory</div>
+        <div class="pill">📊 Reports</div>
+        <div class="pill">🧾 Orders</div>
+      </div>
+
+      <div class="footer">Tip: Bookmark this page on your shop laptop.</div>
+    </div>
+
+    <div class="card right">
+      <a class="btn" href="./login.html?role=cashier" id="btnCashier">
+        <div class="btnLeft">
+          <div class="ico">🧾</div>
+          <div>
+            <div class="btnMain">Login as Cashier</div>
+            <div class="btnSub">Billing • Place orders • Print receipt</div>
+          </div>
+        </div>
+        <div class="arrow">→</div>
+      </a>
+
+      <a class="btn" href="./login.html?role=admin" id="btnAdmin">
+        <div class="btnLeft">
+          <div class="ico">🛠️</div>
+          <div>
+            <div class="btnMain">Login as Admin</div>
+            <div class="btnSub">Inventory • Orders • Reports • Settings</div>
+          </div>
+        </div>
+        <div class="arrow">→</div>
+      </a>
+
+      <div class="note">
+        If you want, I can also add:
+        <b>(1)</b> auto-redirect if already logged in,
+        <b>(2)</b> role lock (admin can’t open cashier, cashier can’t open admin),
+        <b>(3)</b> remember last selected role.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // OPTIONAL: remember last selected role and auto-highlight
+    try {
+      const last = localStorage.getItem("madira_last_role") || "";
+      if (last === "cashier") document.getElementById("btnCashier")?.classList.add("last");
+      if (last === "admin") document.getElementById("btnAdmin")?.classList.add("last");
+
+      document.getElementById("btnCashier")?.addEventListener("click", () => {
+        localStorage.setItem("madira_last_role", "cashier");
+      });
+      document.getElementById("btnAdmin")?.addEventListener("click", () => {
+        localStorage.setItem("madira_last_role", "admin");
+      });
+    } catch {}
+  </script>
+</body>
+</html>
