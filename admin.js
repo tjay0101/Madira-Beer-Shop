@@ -1,10 +1,14 @@
 /* =========================================================
-   ✅ MADIRA ADMIN.JS (FULL COPY-PASTE)
-   - Firestore sync (products/categories/orders) + LocalStorage fallback
-   - Reports: NOT blank anymore (KPIs + GST cards + Top Products + Donut)
-   - GST per product (YOU enter GST, no default). Auto-injects GST input if missing in HTML.
-   - Fixes common runtime errors: LS keys before Firebase, missing IDs, null-safe DOM.
-   - Removes “empty space” feel in Reports by tightening layout + hiding empty blocks.
+   ✅ MADIRA ADMIN.JS (FULL COPY-PASTE) — FIXED SYNC DELETE BUG
+   ✅ FIX: Delete/Reset now persists (does NOT come back after refresh)
+   WHY IT WAS HAPPENING:
+   - setProducts() was writing LocalStorage FIRST, then fbSyncProducts()
+   - fbSyncProducts() compared "prev" vs "next" from LocalStorage
+   - but LocalStorage already contained "next" → no deletions were detected
+   ✅ SOLUTION:
+   - capture prev BEFORE writing LocalStorage, then pass prev+next into Firestore sync
+   - also categories sync now deletes removed categories in Firestore
+   - reset deletes Firestore docs (not just UI/local)
    ========================================================= */
 
 /* =========================================================
@@ -171,7 +175,7 @@ async function fbBootstrapIfEmpty(){
   if (catsSnap.empty && Array.isArray(catsLocal) && catsLocal.length){
     const batch = FB.db.batch();
     catsLocal.forEach(c => {
-      const id = String(c.name||"").toLowerCase().replace(/[^a-z0-9]+/g,"_").slice(0,50) || "cat";
+      const id = catIdFromName(c.name);
       batch.set(_catsRef().doc(id), {
         name:c.name, icon:c.icon||"•",
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -244,29 +248,52 @@ function fbStartRealtimeSync(){
     });
 }
 
-function fbSaveCategories(cats){
-  if (!FB.enabled) return Promise.resolve();
+/* ============================
+   ✅ FIXED: categories sync deletes removed docs too
+   ============================ */
+function catIdFromName(name){
+  return String(name||"").toLowerCase().replace(/[^a-z0-9]+/g,"_").slice(0,50) || "cat";
+}
+
+async function fbSyncCategories(prevCats, nextCats){
+  if (!FB.enabled) return;
+
+  const prevIds = new Set((prevCats||[]).map(c=>catIdFromName(c?.name)).filter(Boolean));
+  const nextIds = new Set((nextCats||[]).map(c=>catIdFromName(c?.name)).filter(Boolean));
+
   const batch = FB.db.batch();
-  cats.forEach(c=>{
-    const id = String(c.name||"").toLowerCase().replace(/[^a-z0-9]+/g,"_").slice(0,50) || "cat";
+
+  (nextCats||[]).forEach(c=>{
+    const id = catIdFromName(c?.name);
+    if (!id) return;
     batch.set(_catsRef().doc(id), {
-      name:c.name, icon:c.icon||"•",
+      name:c.name,
+      icon:c.icon||"•",
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     }, { merge:true });
   });
-  return batch.commit();
+
+  [...prevIds].forEach(id=>{
+    if (!nextIds.has(id)){
+      batch.delete(_catsRef().doc(id));
+    }
+  });
+
+  await batch.commit();
 }
 
-function fbSyncProducts(nextProds){
-  if (!FB.enabled) return Promise.resolve();
+/* ============================
+   ✅ FIXED: products sync now receives prev+next
+   ============================ */
+async function fbSyncProducts(prevProds, nextProds){
+  if (!FB.enabled) return;
 
-  const prev = safeJSON(localStorage.getItem(LS_PRODUCTS), []) || [];
-  const prevIds = new Set(prev.map(p=>p?.id).filter(Boolean));
-  const nextIds = new Set(nextProds.map(p=>p?.id).filter(Boolean));
+  const prevIds = new Set((prevProds||[]).map(p=>p?.id).filter(Boolean));
+  const nextIds = new Set((nextProds||[]).map(p=>p?.id).filter(Boolean));
 
   const batch = FB.db.batch();
 
-  nextProds.forEach(p=>{
+  (nextProds||[]).forEach(p=>{
     if (!p?.id) return;
     batch.set(_prodsRef().doc(p.id), {
       ...p,
@@ -280,7 +307,7 @@ function fbSyncProducts(nextProds){
     }
   });
 
-  return batch.commit();
+  await batch.commit();
 }
 
 /* =========================================================
@@ -301,7 +328,7 @@ let state = {
   ordFrom: "",
   ordTo: "",
 
-  repPreset: "all",  // all/today/week/month/year/custom
+  repPreset: "all",
   repFrom: "",
   repTo: "",
 
@@ -360,10 +387,18 @@ function getCategories(){
   return Array.isArray(cats) ? cats : DEFAULT_CATEGORIES;
 }
 
+/* ✅ FIX: capture prev before writing, then sync prev->next */
 function setCategories(cats){
+  const prev = getCategories();
   const next = Array.isArray(cats) ? cats : [];
   localStorage.setItem(LS_CATEGORIES, JSON.stringify(next));
-  if (FB.enabled) fbSaveCategories(next).catch(console.warn);
+
+  if (FB.enabled){
+    fbSyncCategories(prev, next).catch((e)=>{
+      console.warn("fbSyncCategories failed:", e);
+      alert("Firebase category save failed. Open console (F12) for details.");
+    });
+  }
 }
 
 function getProducts(){
@@ -371,10 +406,18 @@ function getProducts(){
   return Array.isArray(prods) ? prods : DEFAULT_PRODUCTS;
 }
 
+/* ✅ FIX: capture prev before writing, then sync prev->next */
 function setProducts(prods){
+  const prev = getProducts();
   const next = Array.isArray(prods) ? prods : [];
   localStorage.setItem(LS_PRODUCTS, JSON.stringify(next));
-  if (FB.enabled) fbSyncProducts(next).catch(console.warn);
+
+  if (FB.enabled){
+    fbSyncProducts(prev, next).catch((e)=>{
+      console.warn("fbSyncProducts failed:", e);
+      alert("Firebase product save/delete failed. Open console (F12) for details.");
+    });
+  }
 }
 
 function getOrders(){
@@ -793,7 +836,6 @@ function bindAddProductForm(){
 }
 
 function renderAddProductPage(){
-  // ✅ ensure GST input exists on the page
   ensureAddProductGstField();
 
   const cats = getCategories();
@@ -809,7 +851,6 @@ function renderAddProductPage(){
 function ensureAddProductGstField(){
   if (document.getElementById("pGst")) return;
 
-  // Try to insert near price/stock fields (best effort)
   const priceEl = document.getElementById("pPrice");
   const host = priceEl?.closest(".field")?.parentElement || priceEl?.parentElement || document.querySelector("#route-addProduct") || document.body;
 
@@ -837,7 +878,7 @@ function clearAddForm(){
   setVal("pPrice","");
   setVal("pStock","");
   setVal("pLow", String(LOW_STOCK_DEFAULT));
-  setVal("pGst",""); // GST blank (NO default)
+  setVal("pGst","");
 
   imageDataURL = null;
   document.getElementById("imgPreviewWrap")?.classList.add("hidden");
@@ -863,7 +904,7 @@ function saveNewProduct(){
   const stock = Number(getVal("pStock"));
   const lowStock = Number(getVal("pLow") || LOW_STOCK_DEFAULT);
 
-  const gstRate = Number(getVal("pGst")); // ✅ required
+  const gstRate = Number(getVal("pGst"));
   if (!isFinite(gstRate) || gstRate < 0 || gstRate > 100){
     alert("Please enter GST Rate (0 to 100).");
     return;
@@ -894,7 +935,7 @@ function saveNewProduct(){
     barcode,
     desc,
     lowStock: Math.max(0, Math.floor(lowStock)),
-    gstRate: round2(gstRate), // ✅ store per-product GST
+    gstRate: round2(gstRate),
     image: imageDataURL || null,
     createdAt: new Date().toISOString()
   };
@@ -902,7 +943,7 @@ function saveNewProduct(){
   prods.unshift(product);
   setProducts(prods);
 
-  alert("Product saved ✅\nOpen Cashier and refresh to see it.");
+  alert("Product saved ✅\nRefresh Cashier to see it.");
   clearAddForm();
   navigate("inventory");
 }
@@ -1066,13 +1107,12 @@ function renderOrders(){
 }
 
 /* =========================================================
-   REPORTS (NOT blank + removes empty space)
+   REPORTS
    ========================================================= */
 function bindReportsControls(){
   document.getElementById("repExport")?.addEventListener("click", exportOrdersCSV);
   document.getElementById("repViewAll")?.addEventListener("click", ()=> navigate("orders"));
 
-  // If your HTML already has these ids, use them:
   document.getElementById("repApply")?.addEventListener("click", ()=>{
     state.repPreset = document.getElementById("repPreset")?.value || state.repPreset || "all";
     state.repFrom = document.getElementById("repFrom")?.value || "";
@@ -1099,7 +1139,6 @@ function tightenReportsLayout(){
   const host = document.querySelector("#route-reports");
   if (!host) return;
 
-  // Hide any empty placeholder blocks (common cause of big blank space)
   host.querySelectorAll("section, div").forEach(el=>{
     const cls = (el.className||"").toString();
     const isMaybeSpacer =
@@ -1110,20 +1149,16 @@ function tightenReportsLayout(){
     if (!t && el.children.length === 0) el.style.display = "none";
   });
 
-  // Force content to start at top
   const grids = host.querySelectorAll(".grid, .reportsGrid, .contentGrid, .kpiGrid, .kpis, .statsGrid");
   grids.forEach(g=>{ g.style.alignContent = "start"; });
 
-  // If you have a big top header block, remove minHeight if set
   const hero = host.querySelector(".hero, .headerBlock, .topBlock");
   if (hero) hero.style.minHeight = "auto";
 }
 
 function ensureReportsIds(){
-  // If your HTML already contains these cards, ignore.
   if (document.getElementById("repGstRate") && document.getElementById("repTaxable") && document.getElementById("repTax")) return;
 
-  // Try to place inside reports right column area if exists
   const host = document.querySelector("#route-reports");
   if (!host) return;
 
@@ -1163,7 +1198,6 @@ function renderReports(){
   ensureReportsIds();
   tightenReportsLayout();
 
-  // date range from UI if exists
   const uiPreset = document.getElementById("repPreset")?.value;
   if (uiPreset) state.repPreset = uiPreset;
 
@@ -1195,7 +1229,6 @@ function renderReports(){
   setText("repTaxable", money(taxableSales));
   setText("repTax", money(gstAmount));
 
-  // ✅ Fill charts/tables
   renderTopProducts(orders);
 
   const catMap = new Map();
@@ -1229,19 +1262,46 @@ function bindSettingsControls(){
     renderSettings();
   });
 
-  document.getElementById("btnResetAll")?.addEventListener("click", ()=>{
-    const ok = confirm("This will DELETE Products, Categories, Orders.\nAre you sure?");
+  /* ✅ FIX: Reset deletes FIRESTORE too (so it won’t return on refresh) */
+  document.getElementById("btnResetAll")?.addEventListener("click", async ()=>{
+    const ok = confirm("This will DELETE Products, Categories, Orders.\n(Cloud + Local)\nAre you sure?");
     if (!ok) return;
-    localStorage.removeItem(LS_PRODUCTS);
-    localStorage.removeItem(LS_CATEGORIES);
-    localStorage.removeItem(LS_ORDERS);
-    seedIfMissing();
-    alert("Reset done.");
-    renderSettings();
-    renderInventory();
-    renderDashboard();
-    renderOrders();
-    renderReports();
+
+    try{
+      if (!FB.enabled){
+        alert("Firebase is not enabled. Cannot reset cloud data.");
+        return;
+      }
+
+      const [pSnap, cSnap, oSnap] = await Promise.all([
+        _prodsRef().get(),
+        _catsRef().get(),
+        _ordersRef().get(),
+      ]);
+
+      const batch = FB.db.batch();
+      pSnap.forEach(d=> batch.delete(d.ref));
+      cSnap.forEach(d=> batch.delete(d.ref));
+      oSnap.forEach(d=> batch.delete(d.ref));
+      await batch.commit();
+
+      // clear local too
+      localStorage.removeItem(LS_PRODUCTS);
+      localStorage.removeItem(LS_CATEGORIES);
+      localStorage.removeItem(LS_ORDERS);
+      seedIfMissing();
+
+      alert("Reset done ✅ (Cloud cleared)");
+      renderSettings();
+      renderInventory();
+      renderDashboard();
+      renderOrders();
+      renderReports();
+
+    } catch(e){
+      console.error("RESET FAILED:", e);
+      alert("Reset failed. Open console (F12) and share the error.");
+    }
   });
 }
 
@@ -1439,7 +1499,7 @@ function onModalSave(){
   const sub = getVal("mSub").trim();
   const barcode = getVal("mBarcode").trim();
   const price = Number(getVal("mPrice"));
-  const gstRate = Number(getVal("mGst")); // ✅ required on edit too
+  const gstRate = Number(getVal("mGst"));
   const stock = Number(getVal("mStock"));
   const lowStock = Number(getVal("mLow") || LOW_STOCK_DEFAULT);
   const size = getVal("mSize").trim();
