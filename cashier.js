@@ -8,13 +8,14 @@
 
    ✅ FIXES INCLUDED
    1) TAX = 0%  (GST removed)
-   2) Total always updates (no missing total)
-   3) Logout is HARD + clears auth/session keys so it doesn't auto-login
-   4) Logout uses BOTH event listeners + inline onclick fallback
+   2) Total always updates
+   3) Logout is HARD + clears auth/session keys
+   4) Sub + Variant filters in ONE LINE + ONE All tab only
+   5) Selecting Sub will NOT hide Variants (650ml stays), and vice-versa
 
 ========================================================= */
 
-const TAX_RATE = 0.00; // ✅ 0% TAX
+const TAX_RATE = 0.00;
 const SHOP_NAME = "Madira Beer Shop";
 
 /* ---------------------- FIREBASE CONFIG ---------------------- */
@@ -44,9 +45,13 @@ let PRODUCTS = [];
 let CATEGORIES = [];
 let ORDERS = [];
 
+/* ✅ Filters */
 let activeCategory = "Beers";
-let activeSub = "All";
+let activeSub = "All";       // ✅ user-defined subcategory
+let activeVariant = "All";   // ✅ size/variant (e.g., 650ml, 500ml)
 let searchQuery = "";
+
+/* Cart */
 let cart = []; // {id,name,price,qty,barcode,category,sub,size,image}
 let selectedPayment = "CARD";
 
@@ -54,36 +59,21 @@ let SESSION = { cashierName: "Cashier", terminal: "Terminal 01" };
 
 /* ---------------------- BOOT ---------------------- */
 document.addEventListener("DOMContentLoaded", async () => {
-  // Remove optional date button safely
   document.getElementById("btnSelectDate")?.remove();
-
-  // Change cashier name
-  document.getElementById("btnChangeCashierName")?.addEventListener("click", async () => {
-    const current = getCashierName();
-    const next = prompt("Enter Cashier Name:", current);
-    if (next === null) return;
-    if (!setCashierName(next)) {
-      alert("Name cannot be empty.");
-      return;
-    }
-    await saveStaffProfile().catch(() => {});
-    hydrateCashierNameUI();
-    alert("Cashier name updated ✅");
-  });
 
   // Init Firebase (required)
   await fbInitOrFail();
 
-  // Bind UI
   bindTopbar();
   bindTabs();
 
   // Initial UI
   activeCategory = CATEGORIES[0]?.name || "Beers";
-  activeSub = defaultSubForCategory(activeCategory);
+  activeSub = "All";
+  activeVariant = "All";
 
   initSidebarCategories();
-  initSubFilters();
+  initUnifiedFilters(); // ✅ one row only
   renderProducts();
   renderCart();
   refreshSalesView();
@@ -176,37 +166,42 @@ async function ensureStaffDoc() {
   hydrateCashierUI();
 }
 
-/* ---------------------- REALTIME SYNC (Firestore -> memory) ---------------------- */
+/* ---------------------- REALTIME SYNC ---------------------- */
 function startRealtimeSync() {
   stopRealtimeSync();
 
+  // Categories
   FB.unsub.cats = _catsRef().onSnapshot((snap) => {
     CATEGORIES = snap.docs.map(d => d.data()).filter(Boolean);
 
     const exists = CATEGORIES.some(c => c.name === activeCategory);
     if (!exists) {
       activeCategory = CATEGORIES[0]?.name || "Beers";
-      activeSub = defaultSubForCategory(activeCategory);
+      activeSub = "All";
+      activeVariant = "All";
     }
 
     initSidebarCategories();
-    initSubFilters();
+    initUnifiedFilters();
     renderProducts();
   });
 
+  // Products
   FB.unsub.prods = _prodsRef().onSnapshot((snap) => {
     PRODUCTS = snap.docs.map(d => d.data()).filter(Boolean);
 
-    // Drop cart items deleted from Firestore
+    // Drop cart items deleted in Firestore
     const ids = new Set(PRODUCTS.map(p => p.id));
     cart = cart.filter(l => ids.has(l.id));
 
-    initSubFilters();
+    // ✅ rebuild pills from category-only (prevents 650ml vanishing)
+    initUnifiedFilters();
     renderProducts();
     renderCart();
     flashStatus("SYNCED");
   });
 
+  // Orders (today + yesterday)
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0, 0);
 
@@ -226,6 +221,7 @@ function startRealtimeSync() {
       }
     });
 
+  // Staff profile
   FB.unsub.staff = _staffRef().onSnapshot((doc) => {
     const d = doc.data() || {};
     if (d.cashierName) SESSION.cashierName = String(d.cashierName);
@@ -241,88 +237,6 @@ function stopRealtimeSync() {
   try { FB.unsub.staff?.(); } catch {}
   FB.unsub = { cats: null, prods: null, orders: null, staff: null };
 }
-
-/* ---------------------- CASHIER NAME HELPERS ---------------------- */
-function getCashierName() {
-  return String(SESSION.cashierName || "Alex Johnson");
-}
-
-function setCashierName(name) {
-  const n = String(name || "").trim();
-  if (!n) return false;
-  SESSION.cashierName = n;
-  return true;
-}
-
-function hydrateCashierNameUI() {
-  const nameEl = document.getElementById("cashierName");
-  if (nameEl) nameEl.textContent = getCashierName();
-  const av = document.getElementById("avatar");
-  if (av) av.textContent = initials(getCashierName()) || "MB";
-}
-
-function hydrateCashierUI() {
-  const cn = document.getElementById("cashierName");
-  const tn = document.getElementById("terminalName");
-  const av = document.getElementById("avatar");
-
-  if (cn) cn.textContent = SESSION.cashierName || "Alex Johnson";
-  if (tn) tn.textContent = SESSION.terminal || "Terminal 01";
-  if (av) av.textContent = initials(SESSION.cashierName) || "MB";
-}
-
-async function saveStaffProfile() {
-  if (!FB.enabled || !FB.uid) return;
-  await _staffRef().set(
-    {
-      cashierName: SESSION.cashierName,
-      terminal: SESSION.terminal,
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-    },
-    { merge: true }
-  );
-}
-
-/* ---------------------- USB BARCODE SCAN ---------------------- */
-let scanBuffer = "";
-let scanTimer = null;
-const SCAN_TIMEOUT_MS = 60;
-const MIN_BARCODE_LEN = 4;
-
-window.addEventListener("keydown", (e) => {
-  const tag = document.activeElement?.tagName?.toLowerCase();
-  const typingInInput = tag === "input" || tag === "textarea";
-  if (["Shift", "Alt", "Control", "Meta"].includes(e.key)) return;
-
-  if (e.key === "Enter") {
-    if (scanBuffer.length >= MIN_BARCODE_LEN) {
-      const code = scanBuffer;
-      scanBuffer = "";
-      if (scanTimer) clearTimeout(scanTimer);
-      scanTimer = null;
-
-      const found = PRODUCTS.find(p => String(p.barcode) === String(code));
-      if (found) {
-        addToCart(found.id, 1);
-        flashStatus(`SCANNED: ${code}`);
-        if (!document.getElementById("viewTerminal")?.classList.contains("active")) {
-          setActiveTab("terminal");
-        }
-      } else {
-        flashStatus(`UNKNOWN BARCODE: ${code}`, true);
-      }
-
-      if (typingInInput) e.preventDefault();
-    }
-    return;
-  }
-
-  if (e.key.length === 1) {
-    if (scanTimer) clearTimeout(scanTimer);
-    scanTimer = setTimeout(() => { scanBuffer = ""; }, SCAN_TIMEOUT_MS);
-    scanBuffer += e.key;
-  }
-});
 
 /* ---------------------- UI FEEDBACK ---------------------- */
 function flashStatus(msg, isError = false) {
@@ -346,10 +260,9 @@ function flashStatus(msg, isError = false) {
 async function hardLogout() {
   try { stopRealtimeSync(); } catch {}
 
-  // Clear cart/UI
   try { cart = []; renderCart(); } catch {}
 
-  // ✅ Clear auth/session keys so auth.js does NOT auto-login
+  // clear auth/session keys so auth.js doesn't auto-login
   try {
     const killPrefixes = ["madira", "mb_", "MB_", "bs_", "BS_"];
     const killExact = [
@@ -380,12 +293,10 @@ async function hardLogout() {
     }
   } catch {}
 
-  // Firebase sign out
   try {
     if (window.firebase?.auth) await firebase.auth().signOut();
   } catch {}
 
-  // Redirect
   window.location.href = "login.html";
 }
 
@@ -407,10 +318,9 @@ function bindTopbar() {
   document.getElementById("btnCheckout")?.addEventListener("click", () => openCheckout());
   document.getElementById("btnViewSales")?.addEventListener("click", () => setActiveTab("sales"));
 
-  // ✅ Logout (bind + capture + onclick fallback)
+  // logout (strong binding + capture fallback)
   const btn = document.getElementById("logoutBtn");
   if (btn) {
-    // fallback: inline onclick
     btn.setAttribute("onclick", "window.__HARD_LOGOUT__ && window.__HARD_LOGOUT__()");
     btn.addEventListener("click", (e) => {
       e.preventDefault();
@@ -419,7 +329,6 @@ function bindTopbar() {
     });
   }
 
-  // capture fallback: works if other scripts interfere
   document.addEventListener("click", (e) => {
     const hit = e.target?.closest?.("#logoutBtn");
     if (!hit) return;
@@ -428,7 +337,6 @@ function bindTopbar() {
     hardLogout();
   }, true);
 
-  // expose for console + onclick fallback
   window.__HARD_LOGOUT__ = hardLogout;
 }
 
@@ -445,7 +353,6 @@ function bindTabs() {
   document.getElementById("btnGoTerminal")?.addEventListener("click", () => setActiveTab("terminal"));
 }
 
-/* ✅ Sales tab hides sidebar */
 function setActiveTab(which) {
   const tabTerminal = document.getElementById("tabTerminal");
   const tabSales = document.getElementById("tabSales");
@@ -469,7 +376,7 @@ function setActiveTab(which) {
   }
 }
 
-/* ---------------------- CATEGORIES + SUBFILTERS ---------------------- */
+/* ---------------------- SIDEBAR CATEGORIES ---------------------- */
 function initSidebarCategories() {
   const wrap = document.getElementById("categoryList");
   if (!wrap) return;
@@ -486,53 +393,84 @@ function initSidebarCategories() {
     `;
     btn.addEventListener("click", () => {
       activeCategory = c.name;
-      activeSub = defaultSubForCategory(activeCategory);
+      activeSub = "All";
+      activeVariant = "All";
       initSidebarCategories();
-      initSubFilters();
+      initUnifiedFilters();
       renderProducts();
     });
     wrap.appendChild(btn);
   });
 }
 
-function defaultSubForCategory(cat) {
-  if (String(cat).toLowerCase() === "beers") return "All Beers";
-  return "All";
-}
-
-function initSubFilters() {
+/* ---------------------- ✅ ONE-LINE SUB + VARIANT FILTERS ---------------------- */
+function initUnifiedFilters() {
   const row = document.getElementById("subFilterRow");
   if (!row) return;
 
+  // If you had a second row in HTML, ignore it (optional)
+  const vr = document.getElementById("variantFilterRow");
+  if (vr) vr.style.display = "none";
+
   row.innerHTML = "";
 
-  let subs = [];
-  if (String(activeCategory).toLowerCase() === "beers") {
-    subs = ["All Beers", "Craft", "Imported", "Local", "Draft"];
-  } else {
-    subs = ["All"];
-    const uniqueSubs = new Set(
-      PRODUCTS
-        .filter(p => p.category === activeCategory)
-        .map(p => (p.sub || "All"))
-        .filter(s => s && s !== "All")
-    );
-    subs.push(...Array.from(uniqueSubs));
-  }
+  // Build subs/variants from CATEGORY ONLY (not from each other)
+  const catProducts = PRODUCTS.filter(p => p.category === activeCategory);
 
-  if (!subs.includes(activeSub)) activeSub = subs[0];
+  const subs = Array.from(
+    new Set(
+      catProducts
+        .map(p => String(p.sub || "").trim())
+        .filter(Boolean)
+    )
+  );
 
+  const variants = Array.from(
+    new Set(
+      catProducts
+        .map(p => String(p.size || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  // Ensure current selection is valid; if not, reset to All
+  if (activeSub !== "All" && !subs.includes(activeSub)) activeSub = "All";
+  if (activeVariant !== "All" && !variants.includes(activeVariant)) activeVariant = "All";
+
+  // ✅ ONE All pill that resets both
+  row.appendChild(makePill("All", (activeSub === "All" && activeVariant === "All"), () => {
+    activeSub = "All";
+    activeVariant = "All";
+    initUnifiedFilters();
+    renderProducts();
+  }));
+
+  // Subs pills
   subs.forEach(s => {
-    const b = document.createElement("button");
-    b.className = "pill" + (s === activeSub ? " active" : "");
-    b.textContent = s;
-    b.addEventListener("click", () => {
+    row.appendChild(makePill(s, activeSub === s, () => {
       activeSub = s;
-      initSubFilters();
+      initUnifiedFilters();
       renderProducts();
-    });
-    row.appendChild(b);
+    }));
   });
+
+  // Variants pills (650ml/500ml/etc)
+  variants.forEach(v => {
+    row.appendChild(makePill(v, activeVariant === v, () => {
+      activeVariant = v;
+      initUnifiedFilters();
+      renderProducts();
+    }));
+  });
+}
+
+function makePill(text, isActive, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "pill" + (isActive ? " active" : "");
+  b.textContent = text;
+  b.addEventListener("click", onClick);
+  return b;
 }
 
 /* ---------------------- PRODUCTS GRID ---------------------- */
@@ -540,18 +478,14 @@ function filteredProducts() {
   return PRODUCTS.filter(p => {
     if (p.category !== activeCategory) return false;
 
-    if (String(activeCategory).toLowerCase() === "beers") {
-      if (activeSub !== "All Beers" && p.sub !== activeSub) return false;
-    } else {
-      if (activeSub !== "All" && (p.sub || "All") !== activeSub) return false;
-    }
+    if (activeSub !== "All" && String(p.sub || "").trim() !== activeSub) return false;
+    if (activeVariant !== "All" && String(p.size || "").trim() !== activeVariant) return false;
 
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       const hay = (String(p.name || "") + " " + String(p.barcode || "")).toLowerCase();
       if (!hay.includes(q)) return false;
     }
-
     return true;
   });
 }
@@ -579,7 +513,6 @@ function renderProducts() {
         </div>
       </div>
     `;
-
     card.addEventListener("click", () => addToCart(p.id, 1));
     grid.appendChild(card);
   });
@@ -605,7 +538,6 @@ function addToCart(pid, qty = 1) {
       image: p.image || null
     });
   }
-
   renderCart();
 }
 
@@ -620,7 +552,7 @@ function updateQty(pid, delta) {
 
 function cartTotals() {
   const subtotal = cart.reduce((s, l) => s + (Number(l.price || 0) * Number(l.qty || 0)), 0);
-  const tax = subtotal * TAX_RATE; // ✅ will be 0
+  const tax = subtotal * TAX_RATE;
   const total = subtotal + tax;
   return { subtotal, tax, total };
 }
@@ -629,7 +561,6 @@ function renderCart() {
   const wrap = document.getElementById("cartItems");
   if (!wrap) return;
 
-  // drop deleted products (if any)
   const ids = new Set(PRODUCTS.map(p => p.id));
   cart = cart.filter(l => ids.has(l.id));
 
@@ -667,12 +598,8 @@ function renderCart() {
   }
 
   const { subtotal, total } = cartTotals();
-
-  const elSubtotal = document.getElementById("subtotal");
-  const elTotal = document.getElementById("total");
-
-  if (elSubtotal) elSubtotal.textContent = money(subtotal);
-  if (elTotal) elTotal.textContent = money(total); // ✅ will now match subtotal (tax 0)
+  document.getElementById("subtotal").textContent = money(subtotal);
+  document.getElementById("total").textContent = money(total);
 
   const count = cart.reduce((s, l) => s + l.qty, 0);
   const meta = document.getElementById("orderMeta");
@@ -862,7 +789,7 @@ async function checkoutAndSave(method) {
   return result;
 }
 
-/* ---------------------- SALES VIEW (Firestore orders in memory) ---------------------- */
+/* ---------------------- SALES VIEW ---------------------- */
 function refreshSalesView() {
   const today = new Date();
   const todayKey = today.toISOString().slice(0, 10);
@@ -994,6 +921,17 @@ function setShiftProgress(ratio) {
   if (meta) meta.textContent = "8h 12m remaining";
 }
 
+/* ---------------------- CASHIER UI ---------------------- */
+function hydrateCashierUI() {
+  const cn = document.getElementById("cashierName");
+  const tn = document.getElementById("terminalName");
+  const av = document.getElementById("avatar");
+
+  if (cn) cn.textContent = SESSION.cashierName || "Alex Johnson";
+  if (tn) tn.textContent = SESSION.terminal || "Terminal 01";
+  if (av) av.textContent = initials(SESSION.cashierName) || "MB";
+}
+
 /* ---------------------- UTILITIES ---------------------- */
 function escapeHtml(str) {
   return String(str || "")
@@ -1022,7 +960,6 @@ function initials(name) {
     .join("");
 }
 
-/* ✅ Admin-uploaded image if present, else placeholder */
 function getProductImage(p, seed) {
   if (p && p.image && String(p.image).startsWith("data:image")) return p.image;
   return productImgDataURI(seed);

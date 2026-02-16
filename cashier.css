@@ -188,7 +188,22 @@ body{
 .view.active{display:block}
 
 .filters{margin-bottom:12px}
-.pillRow{display:flex; gap:10px; flex-wrap:wrap}
+/* ✅ SINGLE LINE FILTER TABS (NO WRAP) */
+.pillRow{
+  display:flex;
+  gap:10px;
+  flex-wrap:nowrap;            /* ✅ important */
+  overflow-x:auto;             /* ✅ scroll horizontally */
+  overflow-y:hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 6px;
+  scrollbar-width:none;        /* Firefox */
+}
+.pillRow::-webkit-scrollbar{ display:none; } /* Chrome/Safari */
+
+/* keep pills from shrinking */
+.pill{ flex:0 0 auto; white-space:nowrap; }
+
 .pill{
   height:34px;
   padding:0 12px;
@@ -584,4 +599,33 @@ body{
   .shell.salesMode .tableCard{ overflow-x: auto !important; }
   .shell.salesMode .tableHead,
   .shell.salesMode .tr{ min-width: 900px !important; }
+}
+
+
+
+
+
+
+
+
+/* ===== FORCE SINGLE-LINE FILTER TABS (OVERRIDE) ===== */
+#subFilterRow,
+#variantFilterRow{
+  display:flex !important;
+  gap:10px !important;
+  flex-wrap:nowrap !important;          /* stop second line */
+  overflow-x:auto !important;           /* allow scroll */
+  overflow-y:hidden !important;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom:6px;
+  scrollbar-width:none;
+}
+#subFilterRow::-webkit-scrollbar,
+#variantFilterRow::-webkit-scrollbar{
+  display:none;
+}
+#subFilterRow .pill,
+#variantFilterRow .pill{
+  flex:0 0 auto !important;
+  white-space:nowrap !important;
 }
