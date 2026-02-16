@@ -1,27 +1,16 @@
 /* =========================================================
    cashier.js (FULL UPDATED — FIREBASE SOURCE OF TRUTH)
-   ✅ Fixes your issue: "deleted products still show after refresh"
-   WHY it happened: your old cashier.js was reading LocalStorage cache
-   and also re-seeding LocalStorage.
-
-   WHAT THIS VERSION DOES:
+   ✅ TAX REMOVED (0% GST) — totals = subtotal, tax always 0
    - Products/Categories/Orders come ONLY from Firestore realtime
    - NO products/categories LocalStorage caching
-   - If Admin deletes a product doc in Firestore -> it disappears in Cashier instantly
+   - Deleted products disappear instantly
    - Cart auto-removes lines if product got deleted
-   - Sales uses Firestore orders snapshot (no LS orders)
+   - Sales uses Firestore orders snapshot
    - Cashier Name stored in Firestore: shops/{shopId}/staff/{uid}
-
-   Requirements (Firestore structure):
-   shops/{shopId}/categories/{catId}  { name, icon }
-   shops/{shopId}/products/{prodId}   { id, name, category, sub, price, size, stock, barcode, image }
-   shops/{shopId}/orders/{orderId}    { ...order fields... }
-   shops/{shopId}/meta/counters       { posSeq }
-   shops/{shopId}/staff/{uid}         { cashierName, terminal }
-
    ========================================================= */
 
-const TAX_RATE = 0.08;
+const TAX_RATE = 0.0; // ✅ 0% tax
+
 const SHOP_NAME = "Madira Beer Shop";
 
 /* ---------------------- FIREBASE CONFIG ---------------------- */
@@ -61,10 +50,8 @@ let SESSION = { cashierName: "Cashier", terminal: "Terminal 01" };
 
 /* ---------------------- BOOT ---------------------- */
 document.addEventListener("DOMContentLoaded", async () => {
-  // Remove optional date button safely
   document.getElementById("btnSelectDate")?.remove();
 
-  // Change cashier name
   document.getElementById("btnChangeCashierName")?.addEventListener("click", async () => {
     const current = getCashierName();
     const next = prompt("Enter Cashier Name:", current);
@@ -78,13 +65,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     alert("Cashier name updated ✅");
   });
 
-  // Init Firebase (required)
   await fbInitOrFail();
 
   bindTopbar();
   bindTabs();
 
-  // Initial UI
   activeCategory = CATEGORIES[0]?.name || "Beers";
   activeSub = defaultSubForCategory(activeCategory);
 
@@ -176,7 +161,6 @@ async function ensureStaffDoc() {
       { merge: true }
     );
   }
-  // Load initial
   const d = (await _staffRef().get()).data() || {};
   SESSION.cashierName = String(d.cashierName || "Alex Johnson");
   SESSION.terminal = String(d.terminal || "Terminal 01");
@@ -187,7 +171,6 @@ async function ensureStaffDoc() {
 function startRealtimeSync() {
   stopRealtimeSync();
 
-  // Categories
   FB.unsub.cats = _catsRef().onSnapshot((snap) => {
     CATEGORIES = snap.docs.map(d => d.data()).filter(Boolean);
 
@@ -202,11 +185,9 @@ function startRealtimeSync() {
     renderProducts();
   });
 
-  // Products
   FB.unsub.prods = _prodsRef().onSnapshot((snap) => {
     PRODUCTS = snap.docs.map(d => d.data()).filter(Boolean);
 
-    // Force drop cart items that are deleted in Firestore
     const ids = new Set(PRODUCTS.map(p => p.id));
     cart = cart.filter(l => ids.has(l.id));
 
@@ -216,7 +197,6 @@ function startRealtimeSync() {
     flashStatus("SYNCED");
   });
 
-  // Orders (today + yesterday) for sales view
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0, 0);
 
@@ -236,7 +216,6 @@ function startRealtimeSync() {
       }
     });
 
-  // Staff profile live
   FB.unsub.staff = _staffRef().onSnapshot((doc) => {
     const d = doc.data() || {};
     if (d.cashierName) SESSION.cashierName = String(d.cashierName);
@@ -371,7 +350,6 @@ function bindTopbar() {
   document.getElementById("btnCheckout")?.addEventListener("click", () => openCheckout());
   document.getElementById("btnViewSales")?.addEventListener("click", () => setActiveTab("sales"));
 
-  // Logout
   document.getElementById("logoutBtn")?.addEventListener("click", async (e) => {
     e.preventDefault();
     try { if (FB.enabled) await firebase.auth().signOut(); } catch {}
@@ -392,7 +370,6 @@ function bindTabs() {
   document.getElementById("btnGoTerminal")?.addEventListener("click", () => setActiveTab("terminal"));
 }
 
-/* ✅ Sales tab hides sidebar */
 function setActiveTab(which) {
   const tabTerminal = document.getElementById("tabTerminal");
   const tabSales = document.getElementById("tabSales");
@@ -567,8 +544,8 @@ function updateQty(pid, delta) {
 
 function cartTotals() {
   const subtotal = cart.reduce((s, l) => s + (l.price * l.qty), 0);
-  const tax = subtotal * TAX_RATE;
-  const total = subtotal + tax;
+  const tax = 0;                 // ✅ always 0
+  const total = subtotal;        // ✅ total = subtotal
   return { subtotal, tax, total };
 }
 
@@ -576,7 +553,6 @@ function renderCart() {
   const wrap = document.getElementById("cartItems");
   if (!wrap) return;
 
-  // drop deleted products (if any)
   const ids = new Set(PRODUCTS.map(p => p.id));
   cart = cart.filter(l => ids.has(l.id));
 
@@ -615,8 +591,8 @@ function renderCart() {
 
   const { subtotal, tax, total } = cartTotals();
   document.getElementById("subtotal").textContent = money(subtotal);
-  document.getElementById("tax").textContent = money(tax);
-  document.getElementById("total").textContent = money(total);
+  document.getElementById("tax").textContent = money(tax);      // ✅ will show ₹0.00
+  document.getElementById("total").textContent = money(total);  // ✅ equals subtotal
 
   const count = cart.reduce((s, l) => s + l.qty, 0);
   document.getElementById("orderMeta").textContent = cart.length ? `Items: ${count}` : "#—";
@@ -719,7 +695,7 @@ ${SESSION.terminal} • ${SESSION.cashierName}
 ${lines}
 --------------------------------
 Subtotal: ${money(subtotal)}
-Tax (8%): ${money(tax)}
+Tax:      ${money(tax)}
 TOTAL:    ${money(total)}
 Payment:  ${selectedPayment}
 
@@ -737,7 +713,6 @@ async function checkoutAndSave(method) {
   const metaRef = _metaRef();
 
   const result = await FB.db.runTransaction(async (tx) => {
-    // READS FIRST
     const productRefs = cart.map(line => _prodsRef().doc(line.id));
     const counterDoc = await tx.get(metaRef);
     const productDocs = await Promise.all(productRefs.map(ref => tx.get(ref)));
@@ -755,7 +730,6 @@ async function checkoutAndSave(method) {
       if (stock < line.qty) throw new Error(`Low stock: ${line.name} (Available: ${stock})`);
     }
 
-    // WRITES AFTER READS
     tx.set(metaRef, { posSeq: seq }, { merge: true });
 
     for (let i = 0; i < cart.length; i++) {
@@ -794,19 +768,18 @@ async function checkoutAndSave(method) {
       terminal: SESSION.terminal,
       cashier: SESSION.cashierName,
       subtotal: round2(subtotal),
-      tax: round2(tax)
+      tax: round2(tax) // ✅ will store 0
     };
 
     tx.set(_ordersRef().doc(orderDocId), order, { merge: true });
     return { ...order, ts: tsISO };
   });
 
-  // optimistic UI (not required, but instant)
   ORDERS.unshift(result);
   return result;
 }
 
-/* ---------------------- SALES VIEW (Firestore orders in memory) ---------------------- */
+/* ---------------------- SALES VIEW ---------------------- */
 function refreshSalesView() {
   const today = new Date();
   const todayKey = today.toISOString().slice(0, 10);
