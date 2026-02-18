@@ -12,11 +12,16 @@
    3) Logout is HARD + clears auth/session keys
    4) Sub + Variant filters in ONE LINE + ONE All tab only
    5) Selecting Sub will NOT hide Variants (650ml stays), and vice-versa
+   6) ✅ Barcode scanner auto-add (keyboard-wedge)
+   7) ✅ COMPLETE SALE directly completes (no payment modal)
 
 ========================================================= */
 
 const TAX_RATE = 0.00;
 const SHOP_NAME = "Madira Beer Shop";
+
+/* ✅ Default payment for direct checkout (no modal) */
+const DEFAULT_PAYMENT_METHOD = "CARD"; // change to "CASH" or "UPI" if you want
 
 /* ---------------------- FIREBASE CONFIG ---------------------- */
 const FIREBASE_CONFIG = {
@@ -47,13 +52,13 @@ let ORDERS = [];
 
 /* ✅ Filters */
 let activeCategory = "Beers";
-let activeSub = "All";       // ✅ user-defined subcategory
-let activeVariant = "All";   // ✅ size/variant (e.g., 650ml, 500ml)
+let activeSub = "All";
+let activeVariant = "All";
 let searchQuery = "";
 
 /* Cart */
 let cart = []; // {id,name,price,qty,barcode,category,sub,size,image}
-let selectedPayment = "CARD";
+let selectedPayment = DEFAULT_PAYMENT_METHOD;
 
 let SESSION = { cashierName: "Cashier", terminal: "Terminal 01" };
 
@@ -67,13 +72,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindTopbar();
   bindTabs();
 
+  // ✅ Barcode scan handler (must be attached after PRODUCTS will load too)
+  bindBarcodeScanner();
+
   // Initial UI
   activeCategory = CATEGORIES[0]?.name || "Beers";
   activeSub = "All";
   activeVariant = "All";
 
   initSidebarCategories();
-  initUnifiedFilters(); // ✅ one row only
+  initUnifiedFilters();
   renderProducts();
   renderCart();
   refreshSalesView();
@@ -194,7 +202,6 @@ function startRealtimeSync() {
     const ids = new Set(PRODUCTS.map(p => p.id));
     cart = cart.filter(l => ids.has(l.id));
 
-    // ✅ rebuild pills from category-only (prevents 650ml vanishing)
     initUnifiedFilters();
     renderProducts();
     renderCart();
@@ -259,10 +266,8 @@ function flashStatus(msg, isError = false) {
 /* ---------------------- HARD LOGOUT ---------------------- */
 async function hardLogout() {
   try { stopRealtimeSync(); } catch {}
-
   try { cart = []; renderCart(); } catch {}
 
-  // clear auth/session keys so auth.js doesn't auto-login
   try {
     const killPrefixes = ["madira", "mb_", "MB_", "bs_", "BS_"];
     const killExact = [
@@ -315,10 +320,30 @@ function bindTopbar() {
     renderCart();
   });
 
-  document.getElementById("btnCheckout")?.addEventListener("click", () => openCheckout());
+  /* ✅ COMPLETE SALE now directly completes checkout (no modal) */
+  document.getElementById("btnCheckout")?.addEventListener("click", async () => {
+    if (!cart.length) {
+      alert("Scan items first.");
+      return;
+    }
+    try {
+      flashStatus("SAVING...");
+      await checkoutAndSave(DEFAULT_PAYMENT_METHOD);
+      cart = [];
+      renderCart();
+      refreshSalesView();
+      setActiveTab("sales");
+      flashStatus("COMPLETED");
+    } catch (e) {
+      console.error(e);
+      alert(e?.message || "Checkout failed");
+      flashStatus("FAILED", true);
+    }
+  });
+
   document.getElementById("btnViewSales")?.addEventListener("click", () => setActiveTab("sales"));
 
-  // logout (strong binding + capture fallback)
+  // logout
   const btn = document.getElementById("logoutBtn");
   if (btn) {
     btn.setAttribute("onclick", "window.__HARD_LOGOUT__ && window.__HARD_LOGOUT__()");
@@ -338,6 +363,13 @@ function bindTopbar() {
   }, true);
 
   window.__HARD_LOGOUT__ = hardLogout;
+
+  /* ✅ Hide/disable checkout modal if it exists in HTML (so it won't interfere) */
+  const overlay = document.getElementById("checkoutOverlay");
+  if (overlay) {
+    overlay.classList.add("hidden");
+    overlay.setAttribute("aria-hidden", "true");
+  }
 }
 
 function bindTabs() {
@@ -408,36 +440,24 @@ function initUnifiedFilters() {
   const row = document.getElementById("subFilterRow");
   if (!row) return;
 
-  // If you had a second row in HTML, ignore it (optional)
   const vr = document.getElementById("variantFilterRow");
   if (vr) vr.style.display = "none";
 
   row.innerHTML = "";
 
-  // Build subs/variants from CATEGORY ONLY (not from each other)
   const catProducts = PRODUCTS.filter(p => p.category === activeCategory);
 
-  const subs = Array.from(
-    new Set(
-      catProducts
-        .map(p => String(p.sub || "").trim())
-        .filter(Boolean)
-    )
-  );
+  const subs = Array.from(new Set(
+    catProducts.map(p => String(p.sub || "").trim()).filter(Boolean)
+  ));
 
-  const variants = Array.from(
-    new Set(
-      catProducts
-        .map(p => String(p.size || "").trim())
-        .filter(Boolean)
-    )
-  );
+  const variants = Array.from(new Set(
+    catProducts.map(p => String(p.size || "").trim()).filter(Boolean)
+  ));
 
-  // Ensure current selection is valid; if not, reset to All
   if (activeSub !== "All" && !subs.includes(activeSub)) activeSub = "All";
   if (activeVariant !== "All" && !variants.includes(activeVariant)) activeVariant = "All";
 
-  // ✅ ONE All pill that resets both
   row.appendChild(makePill("All", (activeSub === "All" && activeVariant === "All"), () => {
     activeSub = "All";
     activeVariant = "All";
@@ -445,7 +465,6 @@ function initUnifiedFilters() {
     renderProducts();
   }));
 
-  // Subs pills
   subs.forEach(s => {
     row.appendChild(makePill(s, activeSub === s, () => {
       activeSub = s;
@@ -454,7 +473,6 @@ function initUnifiedFilters() {
     }));
   });
 
-  // Variants pills (650ml/500ml/etc)
   variants.forEach(v => {
     row.appendChild(makePill(v, activeVariant === v, () => {
       activeVariant = v;
@@ -477,7 +495,6 @@ function makePill(text, isActive, onClick) {
 function filteredProducts() {
   return PRODUCTS.filter(p => {
     if (p.category !== activeCategory) return false;
-
     if (activeSub !== "All" && String(p.sub || "").trim() !== activeSub) return false;
     if (activeVariant !== "All" && String(p.size || "").trim() !== activeVariant) return false;
 
@@ -606,110 +623,66 @@ function renderCart() {
   if (meta) meta.textContent = cart.length ? `Items: ${count}` : "#—";
 }
 
-/* ---------------------- CHECKOUT MODAL ---------------------- */
-const overlay = document.getElementById("checkoutOverlay");
-const totalText = document.getElementById("checkoutTotalText");
-const receiptPreview = document.getElementById("receiptPreview");
-const cashBox = document.getElementById("cashBox");
-const cashReceived = document.getElementById("cashReceived");
-const cashChange = document.getElementById("cashChange");
+/* =========================================================
+   ✅ BARCODE SCANNER AUTO-ADD (keyboard wedge scanners)
+   - Most barcode scanners type digits fast + press Enter
+   - This captures fast keystream even if focus isn't on input
+========================================================= */
+function bindBarcodeScanner() {
+  let buf = "";
+  let timer = null;
+  const TIMEOUT_MS = 50;      // scanner is fast; human typing is slower
+  const MIN_LEN = 4;
 
-document.getElementById("closeCheckout")?.addEventListener("click", closeCheckout);
+  window.addEventListener("keydown", (e) => {
+    // ignore if ctrl/alt/meta combos
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
 
-document.querySelectorAll(".payBtn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".payBtn").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    selectedPayment = btn.dataset.method;
+    // If user is typing in an input/textarea, still allow scanner
+    // but ignore normal letters except digits (most barcodes are numeric)
+    const k = e.key;
 
-    if (selectedPayment === "CASH") {
-      cashBox?.classList.remove("hidden");
-      if (cashReceived) cashReceived.value = "";
-      if (cashChange) cashChange.textContent = money(0);
-    } else {
-      cashBox?.classList.add("hidden");
-    }
+    if (k === "Enter") {
+      if (buf.length >= MIN_LEN) {
+        const code = buf;
+        buf = "";
+        if (timer) clearTimeout(timer);
+        timer = null;
 
-    updateReceiptPreview();
-  });
-});
+        const found = PRODUCTS.find(p => String(p.barcode || "").trim() === String(code).trim());
+        if (found) {
+          addToCart(found.id, 1);
+          flashStatus(`SCANNED: ${code}`);
+          // keep on terminal
+          if (!document.getElementById("viewTerminal")?.classList.contains("active")) {
+            setActiveTab("terminal");
+          }
+        } else {
+          flashStatus(`UNKNOWN: ${code}`, true);
+        }
 
-cashReceived?.addEventListener("input", () => {
-  const { total } = cartTotals();
-  const rec = parseFloat(cashReceived.value || "0");
-  cashChange.textContent = money(Math.max(0, rec - total));
-});
-
-document.getElementById("btnConfirmSale")?.addEventListener("click", async () => {
-  if (!cart.length) return;
-
-  const { total } = cartTotals();
-
-  if (selectedPayment === "CASH") {
-    const rec = parseFloat(cashReceived.value || "0");
-    if (rec < total) {
-      alert("Cash received is less than total amount.");
+        e.preventDefault();
+        e.stopPropagation();
+      }
       return;
     }
-  }
 
-  try {
-    await checkoutAndSave(selectedPayment);
-    cart = [];
-    renderCart();
-    closeCheckout();
-    refreshSalesView();
-    setActiveTab("sales");
-  } catch (e) {
-    alert(e?.message || "Checkout failed");
-  }
-});
+    // accept only printable characters; prefer digits
+    if (k.length === 1) {
+      // reset timer
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { buf = ""; }, TIMEOUT_MS);
 
-document.getElementById("btnPrint")?.addEventListener("click", () => window.print());
-
-function openCheckout() {
-  if (!cart.length) {
-    alert("Scan items first.");
-    return;
-  }
-
-  const { total } = cartTotals();
-  if (totalText) totalText.textContent = `Total: ${money(total)}`;
-
-  selectedPayment = "CARD";
-  document.querySelectorAll(".payBtn").forEach(b => b.classList.remove("active"));
-  document.querySelector('.payBtn[data-method="CARD"]')?.classList.add("active");
-
-  cashBox?.classList.add("hidden");
-  updateReceiptPreview();
-
-  overlay?.classList.remove("hidden");
-  overlay?.setAttribute("aria-hidden", "false");
-}
-
-function closeCheckout() {
-  overlay?.classList.add("hidden");
-  overlay?.setAttribute("aria-hidden", "true");
-}
-
-function updateReceiptPreview() {
-  const { subtotal, tax, total } = cartTotals();
-  const lines = cart.map(l => `${l.qty}x ${l.name} ${money(l.price * l.qty)}`).join("\n");
-
-  if (!receiptPreview) return;
-
-  receiptPreview.textContent =
-`${SHOP_NAME}
-${SESSION.terminal} • ${SESSION.cashierName}
---------------------------------
-${lines}
---------------------------------
-Subtotal: ${money(subtotal)}
-Tax (0%): ${money(tax)}
-TOTAL:    ${money(total)}
-Payment:  ${selectedPayment}
-
-Thank you!`;
+      // If you want to accept alphabets too, remove this check
+      // Most barcodes are numeric, so this avoids capturing human typing
+      if (/^[0-9]$/.test(k)) {
+        buf += k;
+      } else {
+        // If barcode contains letters, allow them too by uncommenting:
+        // buf += k;
+      }
+    }
+  }, true);
 }
 
 /* ---------------------- CHECKOUT: Firestore transaction ---------------------- */
@@ -733,7 +706,6 @@ async function checkoutAndSave(method) {
     for (let i = 0; i < cart.length; i++) {
       const line = cart[i];
       const pDoc = productDocs[i];
-
       if (!pDoc.exists) throw new Error(`Product removed: ${line.name}`);
 
       const stock = Number(pDoc.data().stock || 0);

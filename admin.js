@@ -1,14 +1,13 @@
 /* =========================================================
-   ✅ MADIRA ADMIN.JS (FULL COPY-PASTE) — FIXED SYNC DELETE BUG
-   ✅ FIX: Delete/Reset now persists (does NOT come back after refresh)
-   WHY IT WAS HAPPENING:
-   - setProducts() was writing LocalStorage FIRST, then fbSyncProducts()
-   - fbSyncProducts() compared "prev" vs "next" from LocalStorage
-   - but LocalStorage already contained "next" → no deletions were detected
-   ✅ SOLUTION:
-   - capture prev BEFORE writing LocalStorage, then pass prev+next into Firestore sync
-   - also categories sync now deletes removed categories in Firestore
-   - reset deletes Firestore docs (not just UI/local)
+   ✅ MADIRA ADMIN.JS (FULL COPY-PASTE) — UPDATED
+   ✅ Updates INCLUDED (ONLY what you asked)
+   1) ✅ Reports: GST + TAX removed completely (reports now use order.amount only)
+   2) ✅ Orders: You can EDIT / DELETE / ADD orders (persists in Firestore)
+      - Realtime sync stores Firestore docId as __docId in each order
+      - Edit Order uses the SAME modal (no new UI dependency)
+      - Add Order supported if you have a button with id="btnAddOrder" (optional)
+
+   NOTE: All existing inventory/product/category logic remains same.
    ========================================================= */
 
 /* =========================================================
@@ -232,6 +231,7 @@ function fbStartRealtimeSync(){
     if (state.route === "reports") renderReports();
   });
 
+  // ✅ UPDATED: store Firestore doc id for each order as __docId
   FB.unsub.orders = _ordersRef()
     .orderBy("ts", "desc")
     .limit(5000)
@@ -239,7 +239,7 @@ function fbStartRealtimeSync(){
       const orders = snap.docs.map(d => {
         const x = d.data() || {};
         const tsISO = x.ts?.toDate ? x.ts.toDate().toISOString() : (x.tsISO || x.ts || "");
-        return { ...x, ts: tsISO };
+        return { ...x, ts: tsISO, __docId: d.id };
       });
       localStorage.setItem(LS_ORDERS, JSON.stringify(orders));
       if (state.route === "orders") renderOrders();
@@ -334,6 +334,9 @@ let state = {
 
   editProductId: null,
   trendMode: "weekly",
+
+  // ✅ NEW: order edit state
+  editOrder: null, // { __docId?, receiptId?, ts?, ... }
 };
 
 let imageDataURL = null;
@@ -426,7 +429,7 @@ function getOrders(){
 }
 
 /* =========================================================
-   GST / TAX HELPERS (per-product GST, stored in product.gstRate)
+   GST / TAX HELPERS (kept for other areas; reports will not use them)
    ========================================================= */
 function num(x){ const n = Number(x); return isFinite(n) ? n : 0; }
 
@@ -444,7 +447,6 @@ function orderSubtotal(o){
 function orderTax(o){
   if (isFinite(Number(o?.tax))) return Number(o.tax);
 
-  // compute from item gstRate if present
   const items = Array.isArray(o?.items) ? o.items : [];
   if (items.length){
     return items.reduce((s,it)=>{
@@ -526,7 +528,7 @@ function forceAllTableHeaders(){
   forceGrid(document.querySelector("#route-inventory .table .thead"),
             "2.2fr 1fr 0.7fr 0.6fr 0.8fr 0.7fr");
   forceGrid(document.querySelector("#route-orders .table .thead"),
-            "1fr 1.1fr 1.7fr 0.8fr 0.8fr 0.8fr 0.5fr");
+            "1fr 1.1fr 1.7fr 0.8fr 0.8fr 0.8fr 0.7fr");
   forceGrid(document.querySelector("#route-reports .table .thead"),
             "0.6fr 1.6fr 1fr 0.7fr 0.9fr");
 }
@@ -805,7 +807,7 @@ function renderInventory(){
 }
 
 /* =========================================================
-   ADD PRODUCT (GST is required; auto-injects GST field if missing in HTML)
+   ADD PRODUCT (GST is required; kept as-is)
    ========================================================= */
 function bindAddProductForm(){
   const box = document.getElementById("uploadBox");
@@ -949,7 +951,7 @@ function saveNewProduct(){
 }
 
 /* =========================================================
-   ORDERS (DATE FILTER + UI)
+   ORDERS (DATE FILTER + UI) ✅ UPDATED with Edit/Delete/Add
    ========================================================= */
 function bindOrdersControls(){
   document.getElementById("btnExportOrders")?.addEventListener("click", exportOrdersCSV);
@@ -980,6 +982,11 @@ function bindOrdersControls(){
 
   document.getElementById("ordPreset")?.addEventListener("change", ()=>{
     syncOrdersDateUI();
+  });
+
+  // ✅ OPTIONAL: If you have a button with id="btnAddOrder"
+  document.getElementById("btnAddOrder")?.addEventListener("click", ()=>{
+    openOrderEditModal(makeBlankOrder());
   });
 }
 
@@ -1083,7 +1090,7 @@ function renderOrders(){
 
     const row = document.createElement("div");
     row.className = "trow ordHead";
-    forceGrid(row, "1fr 1.1fr 1.7fr 0.8fr 0.8fr 0.8fr 0.5fr");
+    forceGrid(row, "1fr 1.1fr 1.7fr 0.8fr 0.8fr 0.8fr 0.7fr");
 
     row.innerHTML = `
       <div style="font-weight:1000;color:#1d4ed8">${escapeHtml(o.receiptId||"—")}</div>
@@ -1095,11 +1102,18 @@ function renderOrders(){
       <div>${escapeHtml(o.cashier||"—")}</div>
       <div style="font-weight:1000">${money(num(o.amount))}</div>
       <div>${statusBadge(o.status||"COMPLETED")}</div>
-      <div class="rowActions" style="display:flex; justify-content:flex-end;">
-        <button class="iconBtn" title="View">👁</button>
+      <div class="rowActions" style="display:flex; justify-content:flex-end; gap:10px;">
+        <button class="iconBtn" title="View" type="button">👁</button>
+        <button class="iconBtn" title="Edit" type="button">✎</button>
+        <button class="iconBtn" title="Delete" type="button">🗑</button>
       </div>
     `;
-    row.querySelector(".iconBtn")?.addEventListener("click", ()=> alert(orderDetailsText(o)));
+
+    const [btnView, btnEdit, btnDel] = row.querySelectorAll(".rowActions .iconBtn");
+    btnView?.addEventListener("click", ()=> alert(orderDetailsText(o)));
+    btnEdit?.addEventListener("click", ()=> openOrderEditModal(o));
+    btnDel?.addEventListener("click", ()=> deleteOrder(o));
+
     body.appendChild(row);
   });
 
@@ -1107,7 +1121,7 @@ function renderOrders(){
 }
 
 /* =========================================================
-   REPORTS
+   REPORTS ✅ UPDATED (GST/TAX removed)
    ========================================================= */
 function bindReportsControls(){
   document.getElementById("repExport")?.addEventListener("click", exportOrdersCSV);
@@ -1156,41 +1170,9 @@ function tightenReportsLayout(){
   if (hero) hero.style.minHeight = "auto";
 }
 
+// ✅ GST cards removed from reports
 function ensureReportsIds(){
-  if (document.getElementById("repGstRate") && document.getElementById("repTaxable") && document.getElementById("repTax")) return;
-
-  const host = document.querySelector("#route-reports");
-  if (!host) return;
-
-  const right =
-    host.querySelector(".rightCol") ||
-    host.querySelector(".sideCol") ||
-    host.querySelector(".side") ||
-    host;
-
-  const wrap = document.createElement("div");
-  wrap.id = "repGstCardsAuto";
-  wrap.style.display = "grid";
-  wrap.style.gap = "12px";
-  wrap.style.marginTop = "12px";
-
-  wrap.innerHTML = `
-    <div class="card" style="padding:14px;border-radius:18px;border:1px solid rgba(17,24,39,.10);background:#fff;">
-      <div style="font-size:12px;color:rgba(17,24,39,.6);font-weight:800;">GST Rate</div>
-      <div id="repGstRate" style="margin-top:6px;font-weight:1000;font-size:22px;">—</div>
-    </div>
-
-    <div class="card" style="padding:14px;border-radius:18px;border:1px solid rgba(17,24,39,.10);background:#fff;">
-      <div style="font-size:12px;color:rgba(17,24,39,.6);font-weight:800;">Taxable Sales (Subtotal)</div>
-      <div id="repTaxable" style="margin-top:6px;font-weight:1000;font-size:22px;">—</div>
-    </div>
-
-    <div class="card" style="padding:14px;border-radius:18px;border:1px solid rgba(17,24,39,.10);background:#fff;">
-      <div style="font-size:12px;color:rgba(17,24,39,.6);font-weight:800;">GST Amount</div>
-      <div id="repTax" style="margin-top:6px;font-weight:1000;font-size:22px;">—</div>
-    </div>
-  `;
-  right.appendChild(wrap);
+  // no-op
 }
 
 function renderReports(){
@@ -1213,21 +1195,14 @@ function renderReports(){
     );
   }
 
-  const taxableSales = orders.reduce((sum, o) => sum + orderSubtotal(o), 0);
-  const gstAmount    = orders.reduce((sum, o) => sum + orderTax(o), 0);
-  const grossSales   = taxableSales + gstAmount;
-
+  // ✅ GST/TAX removed: revenue is sum(order.amount)
+  const grossSales = orders.reduce((sum, o) => sum + num(o.amount), 0);
   const totalOrders = orders.length;
   const aov = totalOrders ? grossSales / totalOrders : 0;
-  const effectiveRate = taxableSales > 0 ? (gstAmount / taxableSales) * 100 : 0;
 
   setText("repTotalRevenue", money(grossSales));
   setText("repTotalOrders", String(totalOrders));
   setText("repAov", money(aov));
-
-  setText("repGstRate", `${effectiveRate.toFixed(2)}%`);
-  setText("repTaxable", money(taxableSales));
-  setText("repTax", money(gstAmount));
 
   renderTopProducts(orders);
 
@@ -1333,7 +1308,7 @@ function renderSettings(){
 }
 
 /* =========================================================
-   MODAL (Edit / Restock) + GST edit
+   MODAL (Edit / Restock) + ✅ Order edit uses same modal
    ========================================================= */
 function bindModalControls(){
   const modalOverlay = document.getElementById("modalOverlay");
@@ -1359,7 +1334,9 @@ function openEditProductModal(productId){
   const p = prods.find(x=>x.id===productId);
   if (!p) return;
 
+  state.editOrder = null; // ✅ ensure order mode off
   state.editProductId = productId;
+
   setText("modalTitle", "Edit Product");
   setText("modalSub", "Update product details");
 
@@ -1437,7 +1414,9 @@ function openRestockModal(productId){
   const p = prods.find(x=>x.id===productId);
   if (!p) return;
 
+  state.editOrder = null; // ✅ ensure order mode off
   state.editProductId = productId;
+
   setText("modalTitle", "Restock Product");
   setText("modalSub", p.name);
 
@@ -1473,9 +1452,21 @@ function closeModal(){
   modalOverlay.classList.add("hidden");
   modalOverlay.setAttribute("aria-hidden","true");
   state.editProductId = null;
+  state.editOrder = null; // ✅ clear order edit
 }
 
-function onModalSave(){
+async function onModalSave(){
+  // ✅ ORDER EDIT MODE
+  if (state.editOrder){
+    await saveOrderEditsFromModal();
+    closeModal();
+    renderOrders();
+    renderReports();
+    renderDashboard();
+    return;
+  }
+
+  // ✅ ORIGINAL PRODUCT MODAL SAVE
   if (!state.editProductId) return;
 
   const prods = getProducts();
@@ -1542,7 +1533,18 @@ function onModalSave(){
   if (state.route === "reports") renderReports();
 }
 
-function onModalDelete(){
+async function onModalDelete(){
+  // ✅ ORDER DELETE MODE
+  if (state.editOrder){
+    await deleteOrder(state.editOrder);
+    closeModal();
+    renderOrders();
+    renderReports();
+    renderDashboard();
+    return;
+  }
+
+  // ✅ ORIGINAL PRODUCT DELETE
   if (!state.editProductId) return;
   const ok = confirm("Delete this product?");
   if (!ok) return;
@@ -1553,6 +1555,217 @@ function onModalDelete(){
   closeModal();
   renderInventory();
   renderDashboard();
+}
+
+/* =========================================================
+   ✅ ORDER EDIT / ADD / DELETE (NEW)
+   ========================================================= */
+function makeBlankOrder(){
+  const now = new Date();
+  const tsISO = now.toISOString();
+  return {
+    __docId: null,
+    receiptId: `MANUAL-${Date.now()}`,
+    ts: tsISO,
+    tsISO: tsISO,
+    timeLabel: now.toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }),
+    items: [],
+    method: "CARD",
+    status: "COMPLETED",
+    cashier: "Admin",
+    terminal: "Admin",
+    amount: 0,
+    subtotal: 0,
+    tax: 0
+  };
+}
+
+function openOrderEditModal(order){
+  const modalBody = document.getElementById("modalBody");
+  if (!modalBody) return;
+
+  state.editProductId = null; // ensure product mode off
+  state.editOrder = JSON.parse(JSON.stringify(order || makeBlankOrder()));
+
+  setText("modalTitle", "Edit Order");
+  setText("modalSub", state.editOrder.receiptId || "Order");
+
+  modalBody.innerHTML = `
+    <div class="form" style="padding:0;">
+      <div class="fieldRow">
+        <div class="field">
+          <label>Receipt ID</label>
+          <input id="oReceipt" value="${escapeAttr(state.editOrder.receiptId||"")}" />
+        </div>
+        <div class="field">
+          <label>Status</label>
+          <select id="oStatus" class="select">
+            ${["COMPLETED","REFUNDED","CANCELLED","PENDING"].map(s=>`<option value="${s}">${s}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label>Payment</label>
+          <select id="oMethod" class="select">
+            ${["CARD","CASH","UPI"].map(s=>`<option value="${s}">${s}</option>`).join("")}
+          </select>
+        </div>
+      </div>
+
+      <div class="fieldRow">
+        <div class="field">
+          <label>Cashier</label>
+          <input id="oCashier" value="${escapeAttr(state.editOrder.cashier||"")}" />
+        </div>
+        <div class="field">
+          <label>Terminal</label>
+          <input id="oTerminal" value="${escapeAttr(state.editOrder.terminal||"")}" />
+        </div>
+        <div class="field">
+          <label>Date/Time (ISO)</label>
+          <input id="oTs" value="${escapeAttr(state.editOrder.ts||state.editOrder.tsISO||"")}" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Items (JSON)</label>
+        <textarea id="oItems" rows="8" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">${escapeHtml(JSON.stringify(state.editOrder.items||[], null, 2))}</textarea>
+        <div class="note" style="margin-top:8px;">
+          Format: [{ "id":"...", "name":"...", "price":205, "qty":1, "category":"Beers", "sub":"Strong", "size":"650ml", "barcode":"..." }]
+        </div>
+      </div>
+
+      <div class="fieldRow">
+        <div class="field">
+          <label>Amount (₹) (auto-calculated on Save)</label>
+          <input id="oAmount" value="${escapeAttr(num(state.editOrder.amount))}" disabled />
+        </div>
+        <div class="field">
+          <label>Firestore Doc ID</label>
+          <input value="${escapeAttr(state.editOrder.__docId || "(new)")}" disabled />
+        </div>
+      </div>
+    </div>
+  `;
+
+  const st = document.getElementById("oStatus");
+  const mt = document.getElementById("oMethod");
+  if (st) st.value = String(state.editOrder.status||"COMPLETED").toUpperCase();
+  if (mt) mt.value = String(state.editOrder.method||"CARD").toUpperCase();
+
+  openModal();
+}
+
+async function saveOrderEditsFromModal(){
+  const o = state.editOrder;
+  if (!o) return;
+
+  const receiptId = getVal("oReceipt").trim();
+  const status = getVal("oStatus").trim().toUpperCase();
+  const method = getVal("oMethod").trim().toUpperCase();
+  const cashier = getVal("oCashier").trim();
+  const terminal = getVal("oTerminal").trim();
+  const tsStr = getVal("oTs").trim();
+
+  let items;
+  try {
+    items = JSON.parse(getVal("oItems") || "[]");
+    if (!Array.isArray(items)) throw new Error("Items must be an array");
+  } catch (e){
+    alert("Items JSON invalid. Fix it and try again.");
+    return;
+  }
+
+  // ✅ GST removed for orders editing: tax=0, total=subtotal
+  const subtotal = items.reduce((s,it)=> s + (num(it.price)*num(it.qty)), 0);
+  const tax = 0;
+  const amount = round2(subtotal + tax);
+
+  let tsISO = "";
+  try { tsISO = tsStr ? new Date(tsStr).toISOString() : new Date().toISOString(); }
+  catch { tsISO = new Date().toISOString(); }
+
+  const updated = {
+    ...o,
+    receiptId: receiptId || o.receiptId || `MANUAL-${Date.now()}`,
+    status: status || "COMPLETED",
+    method: method || "CARD",
+    cashier: cashier || o.cashier || "Admin",
+    terminal: terminal || o.terminal || "Admin",
+    ts: tsISO,
+    tsISO: tsISO,
+    timeLabel: new Date(tsISO).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }),
+    items,
+    subtotal: round2(subtotal),
+    tax: 0,
+    amount
+  };
+
+  // ✅ Update local immediately (UI)
+  const all = getOrders();
+  if (updated.__docId){
+    const idx = all.findIndex(x => x.__docId === updated.__docId);
+    if (idx >= 0) all[idx] = updated;
+    else all.unshift(updated);
+  } else {
+    all.unshift(updated);
+  }
+  localStorage.setItem(LS_ORDERS, JSON.stringify(all));
+
+  // ✅ Firestore persist
+  if (FB.enabled){
+    try{
+      const tsField = firebase.firestore.Timestamp.fromDate(new Date(updated.ts));
+
+      if (updated.__docId){
+        await _ordersRef().doc(updated.__docId).set({
+          ...stripInternalOrderFields(updated),
+          ts: tsField,
+          tsISO: updated.ts,
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge:true });
+      } else {
+        const docRef = _ordersRef().doc();
+        await docRef.set({
+          ...stripInternalOrderFields(updated),
+          ts: tsField,
+          tsISO: updated.ts,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge:true });
+      }
+    } catch(e){
+      console.error("Order save failed:", e);
+      alert("Order saved locally, but Firestore save failed. Check console (F12).");
+    }
+  }
+}
+
+async function deleteOrder(order){
+  if (!order) return;
+  const ok = confirm(`Delete order ${order.receiptId || ""}?`);
+  if (!ok) return;
+
+  // local delete
+  const all = getOrders().filter(o => {
+    if (order.__docId) return o.__docId !== order.__docId;
+    return (o.receiptId !== order.receiptId) || (o.ts !== order.ts);
+  });
+  localStorage.setItem(LS_ORDERS, JSON.stringify(all));
+
+  // firestore delete
+  if (FB.enabled && order.__docId){
+    try{
+      await _ordersRef().doc(order.__docId).delete();
+    } catch(e){
+      console.error("Firestore delete failed:", e);
+      alert("Deleted locally, but Firestore delete failed. Check console (F12).");
+    }
+  }
+}
+
+function stripInternalOrderFields(o){
+  const x = { ...o };
+  delete x.__docId;
+  return x;
 }
 
 /* =========================================================
