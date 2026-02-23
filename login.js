@@ -14,7 +14,7 @@ togglePass?.addEventListener("click", () => {
 
 // Demo credentials (change these)
 const USERS = [
-  { id:"admin",   username:"admin",   email:"admin@beershop.com",   password:"admin123",   role:"admin",   name:"Admin" },
+  { id:"admin",   username:"admin",   email:"admin@beershop.com",   password:"$181992",   role:"admin",   name:"Admin" },
   { id:"manager", username:"manager", email:"manager@beershop.com", password:"manager123", role:"manager", name:"Manager" },
   { id:"cashier", username:"cashier", email:"cashier@beershop.com", password:"cashier123", role:"cashier", name:"Cashier" },
 ];
