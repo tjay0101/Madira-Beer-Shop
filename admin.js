@@ -1,13 +1,12 @@
 /* =========================================================
    ✅ MADIRA ADMIN.JS (FULL COPY-PASTE) — UPDATED
-   ✅ Updates INCLUDED (ONLY what you asked)
-   1) ✅ Reports: GST + TAX removed completely (reports now use order.amount only)
-   2) ✅ Orders: You can EDIT / DELETE / ADD orders (persists in Firestore)
-      - Realtime sync stores Firestore docId as __docId in each order
-      - Edit Order uses the SAME modal (no new UI dependency)
-      - Add Order supported if you have a button with id="btnAddOrder" (optional)
-
-   NOTE: All existing inventory/product/category logic remains same.
+   ✅ Includes:
+   - Existing Admin (Products/Categories/Orders/Reports/Settings)
+   - ✅ Stock Purchases (inward) separate from Sales
+   - ✅ Barcode scan in Purchases:
+       • If barcode matches existing product => auto-select
+       • If barcode is new => link it to an existing product (adds to previous stock)
+       • Supports product.barcodes[] aliases + product.barcode primary
    ========================================================= */
 
 /* =========================================================
@@ -16,6 +15,7 @@
 const LS_PRODUCTS   = "madira_products_v1";
 const LS_CATEGORIES = "madira_categories_v1";
 const LS_ORDERS     = "madira_orders_v1";
+const LS_PURCHASES  = "madira_purchases_v1"; // ✅ NEW (Stock Purchases)
 const LS_AUTH       = "madira_auth_v1";
 
 /* =========================================================
@@ -103,14 +103,13 @@ let FB = {
   db: null,
   auth: null,
   uid: null,
-  unsub: { cats:null, prods:null, orders:null }
+  unsub: { cats:null, prods:null, orders:null, staff:null, purchases:null }
 };
 
 function _loadScriptOnce(src){
   return new Promise((resolve, reject) => {
     const exists = [...document.scripts].some(s => s.src === src);
     if (exists) return resolve();
-
     const s = document.createElement("script");
     s.src = src;
     s.async = true;
@@ -128,10 +127,12 @@ async function ensureFirebaseCompatLoaded(){
   await _loadScriptOnce(`https://www.gstatic.com/firebasejs/${v}/firebase-firestore-compat.js`);
 }
 
-function _shopRef(){  return FB.db.collection("shops").doc(FIREBASE_SHOP_ID); }
-function _catsRef(){  return _shopRef().collection("categories"); }
+function _shopRef(){ return FB.db.collection("shops").doc(FIREBASE_SHOP_ID); }
+function _catsRef(){ return _shopRef().collection("categories"); }
 function _prodsRef(){ return _shopRef().collection("products"); }
-function _ordersRef(){return _shopRef().collection("orders"); }
+function _ordersRef(){ return _shopRef().collection("orders"); }
+function _purchasesRef(){ return _shopRef().collection("purchases"); } // ✅ NEW
+function _staffRef(){ return _shopRef().collection("staff"); }
 
 async function fbInitAndSync(){
   try{
@@ -159,13 +160,15 @@ async function fbInitAndSync(){
 }
 
 async function fbBootstrapIfEmpty(){
-  const catsSnap = await _catsRef().limit(1).get();
-  const prodsSnap = await _prodsRef().limit(1).get();
+  const catsSnap   = await _catsRef().limit(1).get();
+  const prodsSnap  = await _prodsRef().limit(1).get();
   const ordersSnap = await _ordersRef().limit(1).get();
+  const purSnap    = await _purchasesRef().limit(1).get();
 
   const catsLocal   = safeJSON(localStorage.getItem(LS_CATEGORIES), DEFAULT_CATEGORIES) || DEFAULT_CATEGORIES;
   const prodsLocal  = safeJSON(localStorage.getItem(LS_PRODUCTS), DEFAULT_PRODUCTS) || DEFAULT_PRODUCTS;
   const ordersLocal = safeJSON(localStorage.getItem(LS_ORDERS), []) || [];
+  const purLocal    = safeJSON(localStorage.getItem(LS_PURCHASES), []) || [];
 
   const tsFromISO = (iso) => {
     try { return firebase.firestore.Timestamp.fromDate(new Date(iso)); } catch { return null; }
@@ -208,12 +211,37 @@ async function fbBootstrapIfEmpty(){
     });
     await batch.commit();
   }
+
+  if (purSnap.empty && Array.isArray(purLocal) && purLocal.length){
+    const batch = FB.db.batch();
+    purLocal.slice(0,5000).forEach(p => {
+      const tsISO = p.ts || p.tsISO || new Date().toISOString();
+      const docId = p.__docId && String(p.__docId).startsWith("local_")
+        ? `import_${Date.now()}_${Math.random().toString(16).slice(2)}`
+        : (p.__docId || `import_${Date.now()}_${Math.random().toString(16).slice(2)}`);
+
+      batch.set(_purchasesRef().doc(docId), {
+        supplier: p.supplier || "",
+        invoice: p.invoice || "",
+        method: p.method || "CASH",
+        note: p.note || "",
+        items: Array.isArray(p.items) ? p.items : [],
+        totalPaid: Number(p.totalPaid || 0),
+        addToStock: !!p.addToStock,
+        tsISO,
+        ts: tsFromISO(tsISO) || firebase.firestore.FieldValue.serverTimestamp(),
+        importedAt: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge:true });
+    });
+    await batch.commit();
+  }
 }
 
 function fbStartRealtimeSync(){
   try{ FB.unsub.cats?.(); } catch {}
   try{ FB.unsub.prods?.(); } catch {}
   try{ FB.unsub.orders?.(); } catch {}
+  try{ FB.unsub.purchases?.(); } catch {}
 
   FB.unsub.cats = _catsRef().onSnapshot((snap)=>{
     const cats = snap.docs.map(d => d.data()).filter(Boolean);
@@ -229,9 +257,13 @@ function fbStartRealtimeSync(){
     if (state.route === "inventory") renderInventory();
     if (state.route === "dashboard") renderDashboard();
     if (state.route === "reports") renderReports();
+    if (state.route === "purchases") {
+      renderPurchaseProductSelect();
+      renderPurchaseDraft();
+      renderPurchases();
+    }
   });
 
-  // ✅ UPDATED: store Firestore doc id for each order as __docId
   FB.unsub.orders = _ordersRef()
     .orderBy("ts", "desc")
     .limit(5000)
@@ -246,10 +278,23 @@ function fbStartRealtimeSync(){
       if (state.route === "reports") renderReports();
       if (state.route === "dashboard") renderDashboard();
     });
+
+  FB.unsub.purchases = _purchasesRef()
+    .orderBy("ts", "desc")
+    .limit(5000)
+    .onSnapshot((snap)=>{
+      const list = snap.docs.map(d => {
+        const x = d.data() || {};
+        const tsISO = x.ts?.toDate ? x.ts.toDate().toISOString() : (x.tsISO || x.ts || "");
+        return { ...x, ts: tsISO, __docId: d.id };
+      });
+      localStorage.setItem(LS_PURCHASES, JSON.stringify(list));
+      if (state.route === "purchases") renderPurchases();
+    });
 }
 
 /* ============================
-   ✅ FIXED: categories sync deletes removed docs too
+   Sync helpers
    ============================ */
 function catIdFromName(name){
   return String(name||"").toLowerCase().replace(/[^a-z0-9]+/g,"_").slice(0,50) || "cat";
@@ -282,9 +327,6 @@ async function fbSyncCategories(prevCats, nextCats){
   await batch.commit();
 }
 
-/* ============================
-   ✅ FIXED: products sync now receives prev+next
-   ============================ */
 async function fbSyncProducts(prevProds, nextProds){
   if (!FB.enabled) return;
 
@@ -335,8 +377,11 @@ let state = {
   editProductId: null,
   trendMode: "weekly",
 
-  // ✅ NEW: order edit state
-  editOrder: null, // { __docId?, receiptId?, ts?, ... }
+  // Purchases
+  purSearch: "",
+  purPreset: "all",
+  purFrom: "",
+  purTo: "",
 };
 
 let imageDataURL = null;
@@ -361,6 +406,9 @@ async function boot(){
   bindSettingsControls();
   bindModalControls();
 
+  // ✅ Purchases
+  bindPurchasesControls();
+
   hydrateAdminIdentity();
   navigate("dashboard");
 }
@@ -383,14 +431,17 @@ function seedIfMissing(){
   if (!orders || !Array.isArray(orders)){
     localStorage.setItem(LS_ORDERS, JSON.stringify([]));
   }
+
+  const purchases = safeJSON(localStorage.getItem(LS_PURCHASES), null);
+  if (!purchases || !Array.isArray(purchases)){
+    localStorage.setItem(LS_PURCHASES, JSON.stringify([]));
+  }
 }
 
 function getCategories(){
   const cats = safeJSON(localStorage.getItem(LS_CATEGORIES), DEFAULT_CATEGORIES);
   return Array.isArray(cats) ? cats : DEFAULT_CATEGORIES;
 }
-
-/* ✅ FIX: capture prev before writing, then sync prev->next */
 function setCategories(cats){
   const prev = getCategories();
   const next = Array.isArray(cats) ? cats : [];
@@ -408,8 +459,6 @@ function getProducts(){
   const prods = safeJSON(localStorage.getItem(LS_PRODUCTS), DEFAULT_PRODUCTS);
   return Array.isArray(prods) ? prods : DEFAULT_PRODUCTS;
 }
-
-/* ✅ FIX: capture prev before writing, then sync prev->next */
 function setProducts(prods){
   const prev = getProducts();
   const next = Array.isArray(prods) ? prods : [];
@@ -428,8 +477,16 @@ function getOrders(){
   return Array.isArray(orders) ? orders : [];
 }
 
+function getPurchases(){
+  const list = safeJSON(localStorage.getItem(LS_PURCHASES), []);
+  return Array.isArray(list) ? list : [];
+}
+function setPurchases(list){
+  localStorage.setItem(LS_PURCHASES, JSON.stringify(Array.isArray(list) ? list : []));
+}
+
 /* =========================================================
-   GST / TAX HELPERS (kept for other areas; reports will not use them)
+   GST/TAX helpers (reports uses order.amount only)
    ========================================================= */
 function num(x){ const n = Number(x); return isFinite(n) ? n : 0; }
 
@@ -446,7 +503,6 @@ function orderSubtotal(o){
 
 function orderTax(o){
   if (isFinite(Number(o?.tax))) return Number(o.tax);
-
   const items = Array.isArray(o?.items) ? o.items : [];
   if (items.length){
     return items.reduce((s,it)=>{
@@ -483,6 +539,7 @@ function navigate(route){
     crumb.textContent =
       route === "addProduct" ? "Inventory / Add Product" :
       route === "inventory" ? "Inventory / Stock" :
+      route === "purchases" ? "Stock Purchases" :
       route.charAt(0).toUpperCase() + route.slice(1);
   }
 
@@ -494,6 +551,7 @@ function navigate(route){
   if (route === "orders") renderOrders();
   if (route === "reports") renderReports();
   if (route === "settings") renderSettings();
+  if (route === "purchases") renderPurchases();
 }
 
 /* =========================================================
@@ -508,11 +566,12 @@ function bindTopbarSearch(){
     if (state.route === "orders") renderOrders();
     if (state.route === "dashboard") renderDashboard();
     if (state.route === "reports") renderReports();
+    if (state.route === "purchases") renderPurchases();
   });
 }
 
 /* =========================================================
-   GRID FIX: Prevent stacked headers/rows
+   GRID FIX
    ========================================================= */
 function forceGrid(el, cols){
   if (!el) return;
@@ -531,6 +590,10 @@ function forceAllTableHeaders(){
             "1fr 1.1fr 1.7fr 0.8fr 0.8fr 0.8fr 0.7fr");
   forceGrid(document.querySelector("#route-reports .table .thead"),
             "0.6fr 1.6fr 1fr 0.7fr 0.9fr");
+
+  // purchases (if exists)
+  forceGrid(document.querySelector("#purDraftHead"), "1.6fr 0.6fr 0.7fr 0.8fr 0.5fr");
+  forceGrid(document.querySelector("#purTableHead"), "0.9fr 1.4fr 0.9fr 0.7fr 0.8fr 0.7fr 0.6fr");
 }
 
 /* =========================================================
@@ -742,7 +805,7 @@ function renderInventory(){
   const q = ((state.invSearch || state.globalSearch) || "").trim().toLowerCase();
   if (q){
     list = list.filter(p=>{
-      const hay = `${p.id} ${p.name} ${p.barcode} ${p.category}`.toLowerCase();
+      const hay = `${p.id} ${p.name} ${p.barcode} ${(Array.isArray(p.barcodes)?p.barcodes.join(" "):"")} ${p.category}`.toLowerCase();
       return hay.includes(q);
     });
   }
@@ -784,7 +847,7 @@ function renderInventory(){
         <div>
           <div style="font-weight:1000">${escapeHtml(p.name)}</div>
           <div style="font-size:12px;color:rgba(17,24,39,.6)">Barcode: ${escapeHtml(p.barcode||"—")} • ${escapeHtml(p.size||"")}</div>
-          <div style="font-size:12px;color:rgba(17,24,39,.55)">GST: ${isFinite(Number(p.gstRate)) ? `${Number(p.gstRate)}%` : "—"}</div>
+          ${Array.isArray(p.barcodes) && p.barcodes.length ? `<div style="font-size:12px;color:rgba(17,24,39,.55)">Other Barcodes: ${escapeHtml(p.barcodes.slice(0,3).join(", "))}${p.barcodes.length>3?"...":""}</div>` : ``}
         </div>
       </div>
       <div>${escapeHtml(p.category || "—")}</div>
@@ -807,7 +870,7 @@ function renderInventory(){
 }
 
 /* =========================================================
-   ADD PRODUCT (GST is required; kept as-is)
+   ADD PRODUCT (kept as-is from your setup)
    ========================================================= */
 function bindAddProductForm(){
   const box = document.getElementById("uploadBox");
@@ -838,8 +901,6 @@ function bindAddProductForm(){
 }
 
 function renderAddProductPage(){
-  ensureAddProductGstField();
-
   const cats = getCategories();
   const dd = document.getElementById("pCategory");
   if (dd){
@@ -848,27 +909,6 @@ function renderAddProductPage(){
     ).join("");
   }
   clearAddForm();
-}
-
-function ensureAddProductGstField(){
-  if (document.getElementById("pGst")) return;
-
-  const priceEl = document.getElementById("pPrice");
-  const host = priceEl?.closest(".field")?.parentElement || priceEl?.parentElement || document.querySelector("#route-addProduct") || document.body;
-
-  const wrap = document.createElement("div");
-  wrap.className = "field";
-  wrap.innerHTML = `
-    <label>GST Rate (%)</label>
-    <input id="pGst" type="number" min="0" max="100" step="0.01" placeholder="e.g. 5, 12, 18" />
-    <div class="note" style="margin-top:6px;">Required. This GST is used in reports.</div>
-  `;
-
-  if (priceEl?.closest(".field")?.nextSibling){
-    priceEl.closest(".field").after(wrap);
-  } else {
-    host.appendChild(wrap);
-  }
 }
 
 function clearAddForm(){
@@ -935,6 +975,7 @@ function saveNewProduct(){
     size,
     stock: Math.max(0, Math.floor(stock)),
     barcode,
+    barcodes: [barcode], // ✅ keep primary also inside aliases for safety
     desc,
     lowStock: Math.max(0, Math.floor(lowStock)),
     gstRate: round2(gstRate),
@@ -951,12 +992,10 @@ function saveNewProduct(){
 }
 
 /* =========================================================
-   ORDERS (DATE FILTER + UI) ✅ UPDATED with Edit/Delete/Add
+   ORDERS
    ========================================================= */
 function bindOrdersControls(){
   document.getElementById("btnExportOrders")?.addEventListener("click", exportOrdersCSV);
-
-  injectOrdersDateUI();
 
   document.getElementById("ordSearch")?.addEventListener("input", (e)=>{
     state.ordSearch = e.target.value.trim().toLowerCase();
@@ -983,44 +1022,6 @@ function bindOrdersControls(){
   document.getElementById("ordPreset")?.addEventListener("change", ()=>{
     syncOrdersDateUI();
   });
-
-  // ✅ OPTIONAL: If you have a button with id="btnAddOrder"
-  document.getElementById("btnAddOrder")?.addEventListener("click", ()=>{
-    openOrderEditModal(makeBlankOrder());
-  });
-}
-
-function injectOrdersDateUI(){
-  const row = document.querySelector("#route-orders .filtersRow");
-  if (!row) return;
-  if (document.getElementById("ordPreset")) return;
-
-  const wrap = document.createElement("div");
-  wrap.style.display = "flex";
-  wrap.style.gap = "10px";
-  wrap.style.alignItems = "center";
-  wrap.style.flexWrap = "wrap";
-
-  wrap.innerHTML = `
-    <select id="ordPreset" class="select">
-      <option value="today">Today</option>
-      <option value="week">This Week</option>
-      <option value="month">This Month</option>
-      <option value="year">This Year</option>
-      <option value="all">All Time</option>
-      <option value="custom">Custom</option>
-    </select>
-
-    <input id="ordFrom" type="date" class="select" style="min-width:160px;" />
-    <input id="ordTo" type="date" class="select" style="min-width:160px;" />
-    <button class="btn" id="ordApply">Apply</button>
-  `;
-
-  row.appendChild(wrap);
-
-  document.getElementById("ordPreset").value = state.ordPreset || "today";
-  document.getElementById("ordFrom").value = state.ordFrom || "";
-  document.getElementById("ordTo").value = state.ordTo || "";
 
   syncOrdersDateUI();
 }
@@ -1104,16 +1105,10 @@ function renderOrders(){
       <div>${statusBadge(o.status||"COMPLETED")}</div>
       <div class="rowActions" style="display:flex; justify-content:flex-end; gap:10px;">
         <button class="iconBtn" title="View" type="button">👁</button>
-        <button class="iconBtn" title="Edit" type="button">✎</button>
-        <button class="iconBtn" title="Delete" type="button">🗑</button>
       </div>
     `;
 
-    const [btnView, btnEdit, btnDel] = row.querySelectorAll(".rowActions .iconBtn");
-    btnView?.addEventListener("click", ()=> alert(orderDetailsText(o)));
-    btnEdit?.addEventListener("click", ()=> openOrderEditModal(o));
-    btnDel?.addEventListener("click", ()=> deleteOrder(o));
-
+    row.querySelector(".iconBtn")?.addEventListener("click", ()=> alert(orderDetailsText(o)));
     body.appendChild(row);
   });
 
@@ -1121,7 +1116,7 @@ function renderOrders(){
 }
 
 /* =========================================================
-   REPORTS ✅ UPDATED (GST/TAX removed)
+   REPORTS (revenue uses order.amount only)
    ========================================================= */
 function bindReportsControls(){
   document.getElementById("repExport")?.addEventListener("click", exportOrdersCSV);
@@ -1149,36 +1144,8 @@ function syncReportsDateUI(){
   toEl.style.display = isCustom ? "inline-flex" : "none";
 }
 
-function tightenReportsLayout(){
-  const host = document.querySelector("#route-reports");
-  if (!host) return;
-
-  host.querySelectorAll("section, div").forEach(el=>{
-    const cls = (el.className||"").toString();
-    const isMaybeSpacer =
-      cls.includes("spacer") || cls.includes("placeholder") || cls.includes("empty");
-    if (!isMaybeSpacer) return;
-
-    const t = (el.textContent||"").trim();
-    if (!t && el.children.length === 0) el.style.display = "none";
-  });
-
-  const grids = host.querySelectorAll(".grid, .reportsGrid, .contentGrid, .kpiGrid, .kpis, .statsGrid");
-  grids.forEach(g=>{ g.style.alignContent = "start"; });
-
-  const hero = host.querySelector(".hero, .headerBlock, .topBlock");
-  if (hero) hero.style.minHeight = "auto";
-}
-
-// ✅ GST cards removed from reports
-function ensureReportsIds(){
-  // no-op
-}
-
 function renderReports(){
   forceAllTableHeaders();
-  ensureReportsIds();
-  tightenReportsLayout();
 
   const uiPreset = document.getElementById("repPreset")?.value;
   if (uiPreset) state.repPreset = uiPreset;
@@ -1195,7 +1162,6 @@ function renderReports(){
     );
   }
 
-  // ✅ GST/TAX removed: revenue is sum(order.amount)
   const grossSales = orders.reduce((sum, o) => sum + num(o.amount), 0);
   const totalOrders = orders.length;
   const aov = totalOrders ? grossSales / totalOrders : 0;
@@ -1218,7 +1184,7 @@ function renderReports(){
 }
 
 /* =========================================================
-   SETTINGS (Categories)
+   SETTINGS
    ========================================================= */
 function bindSettingsControls(){
   document.getElementById("btnAddCategory")?.addEventListener("click", ()=>{
@@ -1237,9 +1203,8 @@ function bindSettingsControls(){
     renderSettings();
   });
 
-  /* ✅ FIX: Reset deletes FIRESTORE too (so it won’t return on refresh) */
   document.getElementById("btnResetAll")?.addEventListener("click", async ()=>{
-    const ok = confirm("This will DELETE Products, Categories, Orders.\n(Cloud + Local)\nAre you sure?");
+    const ok = confirm("This will DELETE Products, Categories, Orders, Purchases.\n(Cloud + Local)\nAre you sure?");
     if (!ok) return;
 
     try{
@@ -1248,22 +1213,24 @@ function bindSettingsControls(){
         return;
       }
 
-      const [pSnap, cSnap, oSnap] = await Promise.all([
+      const [pSnap, cSnap, oSnap, purSnap] = await Promise.all([
         _prodsRef().get(),
         _catsRef().get(),
         _ordersRef().get(),
+        _purchasesRef().get(),
       ]);
 
       const batch = FB.db.batch();
       pSnap.forEach(d=> batch.delete(d.ref));
       cSnap.forEach(d=> batch.delete(d.ref));
       oSnap.forEach(d=> batch.delete(d.ref));
+      purSnap.forEach(d=> batch.delete(d.ref));
       await batch.commit();
 
-      // clear local too
       localStorage.removeItem(LS_PRODUCTS);
       localStorage.removeItem(LS_CATEGORIES);
       localStorage.removeItem(LS_ORDERS);
+      localStorage.removeItem(LS_PURCHASES);
       seedIfMissing();
 
       alert("Reset done ✅ (Cloud cleared)");
@@ -1272,6 +1239,7 @@ function bindSettingsControls(){
       renderDashboard();
       renderOrders();
       renderReports();
+      if (state.route === "purchases") renderPurchases();
 
     } catch(e){
       console.error("RESET FAILED:", e);
@@ -1308,7 +1276,7 @@ function renderSettings(){
 }
 
 /* =========================================================
-   MODAL (Edit / Restock) + ✅ Order edit uses same modal
+   MODAL (Edit / Restock)
    ========================================================= */
 function bindModalControls(){
   const modalOverlay = document.getElementById("modalOverlay");
@@ -1334,7 +1302,6 @@ function openEditProductModal(productId){
   const p = prods.find(x=>x.id===productId);
   if (!p) return;
 
-  state.editOrder = null; // ✅ ensure order mode off
   state.editProductId = productId;
 
   setText("modalTitle", "Edit Product");
@@ -1361,7 +1328,7 @@ function openEditProductModal(productId){
           <input id="mSub" value="${escapeAttr(p.sub||"")}" />
         </div>
         <div class="field">
-          <label>Barcode</label>
+          <label>Barcode (primary)</label>
           <input id="mBarcode" value="${escapeAttr(p.barcode||"")}" />
         </div>
       </div>
@@ -1396,6 +1363,10 @@ function openEditProductModal(productId){
         <label>Description</label>
         <textarea id="mDesc" rows="3">${escapeHtml(p.desc||"")}</textarea>
       </div>
+
+      <div class="note" style="margin-top:10px;">
+        Tip: You can have multiple barcodes for same product (aliases) automatically via Purchases linking.
+      </div>
     </div>
   `;
 
@@ -1414,7 +1385,6 @@ function openRestockModal(productId){
   const p = prods.find(x=>x.id===productId);
   if (!p) return;
 
-  state.editOrder = null; // ✅ ensure order mode off
   state.editProductId = productId;
 
   setText("modalTitle", "Restock Product");
@@ -1452,28 +1422,15 @@ function closeModal(){
   modalOverlay.classList.add("hidden");
   modalOverlay.setAttribute("aria-hidden","true");
   state.editProductId = null;
-  state.editOrder = null; // ✅ clear order edit
 }
 
 async function onModalSave(){
-  // ✅ ORDER EDIT MODE
-  if (state.editOrder){
-    await saveOrderEditsFromModal();
-    closeModal();
-    renderOrders();
-    renderReports();
-    renderDashboard();
-    return;
-  }
-
-  // ✅ ORIGINAL PRODUCT MODAL SAVE
   if (!state.editProductId) return;
 
   const prods = getProducts();
   const idx = prods.findIndex(x=>x.id===state.editProductId);
   if (idx < 0) return;
 
-  // restock flow
   const addStockEl = document.getElementById("mAddStock");
   if (addStockEl){
     const add = Number(addStockEl.value || 0);
@@ -1511,12 +1468,17 @@ async function onModalSave(){
     return;
   }
 
+  // ensure barcodes array keeps primary too
+  const set = new Set(Array.isArray(prods[idx].barcodes) ? prods[idx].barcodes.map(x=>String(x).trim()).filter(Boolean) : []);
+  if (barcode) set.add(barcode);
+
   prods[idx] = {
     ...prods[idx],
     name,
     category,
     sub: sub || prods[idx].sub || "All",
     barcode,
+    barcodes: Array.from(set),
     price: round2(price),
     gstRate: round2(gstRate),
     stock: Math.max(0, Math.floor(stock)),
@@ -1534,17 +1496,6 @@ async function onModalSave(){
 }
 
 async function onModalDelete(){
-  // ✅ ORDER DELETE MODE
-  if (state.editOrder){
-    await deleteOrder(state.editOrder);
-    closeModal();
-    renderOrders();
-    renderReports();
-    renderDashboard();
-    return;
-  }
-
-  // ✅ ORIGINAL PRODUCT DELETE
   if (!state.editProductId) return;
   const ok = confirm("Delete this product?");
   if (!ok) return;
@@ -1558,218 +1509,7 @@ async function onModalDelete(){
 }
 
 /* =========================================================
-   ✅ ORDER EDIT / ADD / DELETE (NEW)
-   ========================================================= */
-function makeBlankOrder(){
-  const now = new Date();
-  const tsISO = now.toISOString();
-  return {
-    __docId: null,
-    receiptId: `MANUAL-${Date.now()}`,
-    ts: tsISO,
-    tsISO: tsISO,
-    timeLabel: now.toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }),
-    items: [],
-    method: "CARD",
-    status: "COMPLETED",
-    cashier: "Admin",
-    terminal: "Admin",
-    amount: 0,
-    subtotal: 0,
-    tax: 0
-  };
-}
-
-function openOrderEditModal(order){
-  const modalBody = document.getElementById("modalBody");
-  if (!modalBody) return;
-
-  state.editProductId = null; // ensure product mode off
-  state.editOrder = JSON.parse(JSON.stringify(order || makeBlankOrder()));
-
-  setText("modalTitle", "Edit Order");
-  setText("modalSub", state.editOrder.receiptId || "Order");
-
-  modalBody.innerHTML = `
-    <div class="form" style="padding:0;">
-      <div class="fieldRow">
-        <div class="field">
-          <label>Receipt ID</label>
-          <input id="oReceipt" value="${escapeAttr(state.editOrder.receiptId||"")}" />
-        </div>
-        <div class="field">
-          <label>Status</label>
-          <select id="oStatus" class="select">
-            ${["COMPLETED","REFUNDED","CANCELLED","PENDING"].map(s=>`<option value="${s}">${s}</option>`).join("")}
-          </select>
-        </div>
-        <div class="field">
-          <label>Payment</label>
-          <select id="oMethod" class="select">
-            ${["CARD","CASH","UPI"].map(s=>`<option value="${s}">${s}</option>`).join("")}
-          </select>
-        </div>
-      </div>
-
-      <div class="fieldRow">
-        <div class="field">
-          <label>Cashier</label>
-          <input id="oCashier" value="${escapeAttr(state.editOrder.cashier||"")}" />
-        </div>
-        <div class="field">
-          <label>Terminal</label>
-          <input id="oTerminal" value="${escapeAttr(state.editOrder.terminal||"")}" />
-        </div>
-        <div class="field">
-          <label>Date/Time (ISO)</label>
-          <input id="oTs" value="${escapeAttr(state.editOrder.ts||state.editOrder.tsISO||"")}" />
-        </div>
-      </div>
-
-      <div class="field">
-        <label>Items (JSON)</label>
-        <textarea id="oItems" rows="8" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">${escapeHtml(JSON.stringify(state.editOrder.items||[], null, 2))}</textarea>
-        <div class="note" style="margin-top:8px;">
-          Format: [{ "id":"...", "name":"...", "price":205, "qty":1, "category":"Beers", "sub":"Strong", "size":"650ml", "barcode":"..." }]
-        </div>
-      </div>
-
-      <div class="fieldRow">
-        <div class="field">
-          <label>Amount (₹) (auto-calculated on Save)</label>
-          <input id="oAmount" value="${escapeAttr(num(state.editOrder.amount))}" disabled />
-        </div>
-        <div class="field">
-          <label>Firestore Doc ID</label>
-          <input value="${escapeAttr(state.editOrder.__docId || "(new)")}" disabled />
-        </div>
-      </div>
-    </div>
-  `;
-
-  const st = document.getElementById("oStatus");
-  const mt = document.getElementById("oMethod");
-  if (st) st.value = String(state.editOrder.status||"COMPLETED").toUpperCase();
-  if (mt) mt.value = String(state.editOrder.method||"CARD").toUpperCase();
-
-  openModal();
-}
-
-async function saveOrderEditsFromModal(){
-  const o = state.editOrder;
-  if (!o) return;
-
-  const receiptId = getVal("oReceipt").trim();
-  const status = getVal("oStatus").trim().toUpperCase();
-  const method = getVal("oMethod").trim().toUpperCase();
-  const cashier = getVal("oCashier").trim();
-  const terminal = getVal("oTerminal").trim();
-  const tsStr = getVal("oTs").trim();
-
-  let items;
-  try {
-    items = JSON.parse(getVal("oItems") || "[]");
-    if (!Array.isArray(items)) throw new Error("Items must be an array");
-  } catch (e){
-    alert("Items JSON invalid. Fix it and try again.");
-    return;
-  }
-
-  // ✅ GST removed for orders editing: tax=0, total=subtotal
-  const subtotal = items.reduce((s,it)=> s + (num(it.price)*num(it.qty)), 0);
-  const tax = 0;
-  const amount = round2(subtotal + tax);
-
-  let tsISO = "";
-  try { tsISO = tsStr ? new Date(tsStr).toISOString() : new Date().toISOString(); }
-  catch { tsISO = new Date().toISOString(); }
-
-  const updated = {
-    ...o,
-    receiptId: receiptId || o.receiptId || `MANUAL-${Date.now()}`,
-    status: status || "COMPLETED",
-    method: method || "CARD",
-    cashier: cashier || o.cashier || "Admin",
-    terminal: terminal || o.terminal || "Admin",
-    ts: tsISO,
-    tsISO: tsISO,
-    timeLabel: new Date(tsISO).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }),
-    items,
-    subtotal: round2(subtotal),
-    tax: 0,
-    amount
-  };
-
-  // ✅ Update local immediately (UI)
-  const all = getOrders();
-  if (updated.__docId){
-    const idx = all.findIndex(x => x.__docId === updated.__docId);
-    if (idx >= 0) all[idx] = updated;
-    else all.unshift(updated);
-  } else {
-    all.unshift(updated);
-  }
-  localStorage.setItem(LS_ORDERS, JSON.stringify(all));
-
-  // ✅ Firestore persist
-  if (FB.enabled){
-    try{
-      const tsField = firebase.firestore.Timestamp.fromDate(new Date(updated.ts));
-
-      if (updated.__docId){
-        await _ordersRef().doc(updated.__docId).set({
-          ...stripInternalOrderFields(updated),
-          ts: tsField,
-          tsISO: updated.ts,
-          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        }, { merge:true });
-      } else {
-        const docRef = _ordersRef().doc();
-        await docRef.set({
-          ...stripInternalOrderFields(updated),
-          ts: tsField,
-          tsISO: updated.ts,
-          createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        }, { merge:true });
-      }
-    } catch(e){
-      console.error("Order save failed:", e);
-      alert("Order saved locally, but Firestore save failed. Check console (F12).");
-    }
-  }
-}
-
-async function deleteOrder(order){
-  if (!order) return;
-  const ok = confirm(`Delete order ${order.receiptId || ""}?`);
-  if (!ok) return;
-
-  // local delete
-  const all = getOrders().filter(o => {
-    if (order.__docId) return o.__docId !== order.__docId;
-    return (o.receiptId !== order.receiptId) || (o.ts !== order.ts);
-  });
-  localStorage.setItem(LS_ORDERS, JSON.stringify(all));
-
-  // firestore delete
-  if (FB.enabled && order.__docId){
-    try{
-      await _ordersRef().doc(order.__docId).delete();
-    } catch(e){
-      console.error("Firestore delete failed:", e);
-      alert("Deleted locally, but Firestore delete failed. Check console (F12).");
-    }
-  }
-}
-
-function stripInternalOrderFields(o){
-  const x = { ...o };
-  delete x.__docId;
-  return x;
-}
-
-/* =========================================================
-   TOP PRODUCTS + DONUT (REPORTS)
+   TOP PRODUCTS + DONUT (Reports)
    ========================================================= */
 function renderTopProducts(orders){
   const map = new Map();
@@ -2094,41 +1834,34 @@ function startOfDay(d){
 function endOfDay(d){
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23,59,59,999);
 }
-
 function getPresetRange(preset){
   const now = new Date();
-
   if (preset === "all") return {from:null, to:null};
 
   if (preset === "today"){
     return { from:startOfDay(now), to:endOfDay(now) };
   }
-
   if (preset === "week"){
-    const day = now.getDay() || 7; // Monday start
+    const day = now.getDay() || 7;
     const monday = new Date(now);
     monday.setDate(now.getDate() - day + 1);
     const sunday = new Date(monday);
     sunday.setDate(monday.getDate() + 6);
     return { from:startOfDay(monday), to:endOfDay(sunday) };
   }
-
   if (preset === "month"){
     const first = new Date(now.getFullYear(), now.getMonth(), 1);
     const last  = new Date(now.getFullYear(), now.getMonth()+1, 0);
     return { from:startOfDay(first), to:endOfDay(last) };
   }
-
   if (preset === "year"){
     return {
       from:startOfDay(new Date(now.getFullYear(),0,1)),
       to:endOfDay(new Date(now.getFullYear(),11,31))
     };
   }
-
   return {from:null, to:null};
 }
-
 function filterOrdersByDate(orders, from, to){
   if (!from && !to) return orders;
   return orders.filter(o=>{
@@ -2138,4 +1871,544 @@ function filterOrdersByDate(orders, from, to){
     if (to && ts > to) return false;
     return true;
   });
+}
+
+/* =========================================================
+   ✅ STOCK PURCHASES (INWARD) — WITH BARCODE SCAN + LINKING
+   ========================================================= */
+
+let purchaseDraft = []; // { productId, name, qty, cost, lineTotal }
+
+function bindPurchasesControls(){
+  document.getElementById("purPreset")?.addEventListener("change", () => syncPurchasesDateUI());
+
+  document.getElementById("purApply")?.addEventListener("click", () => {
+    state.purPreset = document.getElementById("purPreset")?.value || "all";
+    state.purFrom   = document.getElementById("purFrom")?.value || "";
+    state.purTo     = document.getElementById("purTo")?.value || "";
+    renderPurchases();
+  });
+
+  document.getElementById("purSearch")?.addEventListener("input", (e) => {
+    state.purSearch = (e.target.value || "").trim().toLowerCase();
+    renderPurchases();
+  });
+
+  // ✅ Scan input (optional)
+  const scanInp = document.getElementById("purBarcodeScan");
+  if (scanInp){
+    scanInp.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const code = String(scanInp.value || "").trim();
+      scanInp.value = "";
+      if (!code) return;
+      handlePurchaseBarcode(code);
+    });
+  }
+
+  // ✅ Wedge scanner: works without focusing input
+  bindPurchaseWedgeScanner();
+
+  document.getElementById("purAddItem")?.addEventListener("click", () => {
+    const prods = getProducts();
+    const sel = document.getElementById("purProductSelect");
+    const pid = sel?.value || "";
+    const p = prods.find(x => x.id === pid);
+    if (!p) { alert("Select a product"); return; }
+
+    const qty = Math.floor(num(document.getElementById("purQty")?.value || 0));
+    const cost = round2(num(document.getElementById("purCost")?.value || 0));
+
+    if (qty <= 0) { alert("Enter qty"); return; }
+    if (cost < 0) { alert("Enter valid cost"); return; }
+
+    purchaseDraft.push({
+      productId: p.id,
+      name: p.name,
+      qty,
+      cost,
+      lineTotal: round2(qty * cost)
+    });
+
+    if (document.getElementById("purQty")) document.getElementById("purQty").value = "";
+    if (document.getElementById("purCost")) document.getElementById("purCost").value = "";
+
+    renderPurchaseDraft();
+  });
+
+  document.getElementById("purClearDraft")?.addEventListener("click", () => {
+    purchaseDraft = [];
+    renderPurchaseDraft();
+  });
+
+  document.getElementById("purSave")?.addEventListener("click", savePurchaseEntry);
+}
+
+function syncPurchasesDateUI(){
+  const preset = document.getElementById("purPreset")?.value || state.purPreset || "all";
+  const fromEl = document.getElementById("purFrom");
+  const toEl = document.getElementById("purTo");
+  if (!fromEl || !toEl) return;
+
+  const isCustom = preset === "custom";
+  fromEl.style.display = isCustom ? "inline-flex" : "none";
+  toEl.style.display = isCustom ? "inline-flex" : "none";
+}
+
+function renderPurchaseProductSelect(){
+  const sel = document.getElementById("purProductSelect");
+  if (!sel) return;
+
+  const prods = getProducts();
+  sel.innerHTML = prods.length
+    ? prods.map(p => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)} (${escapeHtml(p.category||"")})</option>`).join("")
+    : `<option value="">No products</option>`;
+}
+
+function renderPurchaseDraft(){
+  forceAllTableHeaders();
+  renderPurchaseProductSelect();
+
+  const body = document.getElementById("purDraftBody");
+  const totalEl = document.getElementById("purDraftTotal");
+  if (!body) return;
+
+  body.innerHTML = "";
+
+  if (!purchaseDraft.length){
+    if (totalEl) totalEl.textContent = "Total: ₹0.00";
+    return;
+  }
+
+  const total = purchaseDraft.reduce((s, x) => s + num(x.lineTotal), 0);
+  if (totalEl) totalEl.textContent = `Total: ${money(total)}`;
+
+  purchaseDraft.forEach((it, idx) => {
+    const row = document.createElement("div");
+    row.className = "trow";
+    forceGrid(row, "1.6fr 0.6fr 0.7fr 0.8fr 0.5fr");
+
+    row.innerHTML = `
+      <div style="font-weight:950">${escapeHtml(it.name)}</div>
+      <div>${Math.floor(num(it.qty))}</div>
+      <div>${money(num(it.cost))}</div>
+      <div style="font-weight:1000">${money(num(it.lineTotal))}</div>
+      <div style="display:flex; justify-content:flex-end;">
+        <button class="iconBtn" title="Remove" type="button">🗑</button>
+      </div>
+    `;
+
+    row.querySelector(".iconBtn")?.addEventListener("click", () => {
+      purchaseDraft.splice(idx, 1);
+      renderPurchaseDraft();
+    });
+
+    body.appendChild(row);
+  });
+}
+
+/* ----------------------------
+   Barcode find + link logic
+----------------------------- */
+function normalizeCode(code){
+  return String(code || "").trim();
+}
+
+function findProductByBarcode(code){
+  const c = normalizeCode(code);
+  if (!c) return null;
+
+  const prods = getProducts();
+  return prods.find(p => {
+    const primary = normalizeCode(p.barcode);
+    if (primary && primary === c) return true;
+
+    const arr = Array.isArray(p.barcodes) ? p.barcodes.map(normalizeCode) : [];
+    return arr.includes(c);
+  }) || null;
+}
+
+function linkBarcodeToProduct(productId, code, makePrimary=false){
+  const c = normalizeCode(code);
+  if (!c) return;
+
+  const prods = getProducts();
+  const p = prods.find(x => x.id === productId);
+  if (!p) return;
+
+  const set = new Set();
+
+  const primary = normalizeCode(p.barcode);
+  if (primary) set.add(primary);
+
+  if (Array.isArray(p.barcodes)){
+    p.barcodes.forEach(b => {
+      const bb = normalizeCode(b);
+      if (bb) set.add(bb);
+    });
+  }
+
+  set.add(c);
+  p.barcodes = Array.from(set);
+
+  if (makePrimary) p.barcode = c;
+
+  setProducts(prods);
+}
+
+function handlePurchaseBarcode(code){
+  const c = normalizeCode(code);
+  if (!c) return;
+
+  const found = findProductByBarcode(c);
+  if (found){
+    const sel = document.getElementById("purProductSelect");
+    if (sel){
+      sel.value = found.id;
+      sel.dispatchEvent(new Event("change"));
+    }
+
+    const qtyEl = document.getElementById("purQty");
+    if (qtyEl && !String(qtyEl.value || "").trim()) qtyEl.value = "1";
+
+    const costEl = document.getElementById("purCost");
+    (costEl || qtyEl)?.focus();
+    return;
+  }
+
+  showLinkBarcodeDialog(c);
+}
+
+/* ----------------------------
+   Wedge scanner (no focus)
+----------------------------- */
+function bindPurchaseWedgeScanner(){
+  if (window.__PURCHASE_WEDGE_BOUND__) return;
+  window.__PURCHASE_WEDGE_BOUND__ = true;
+
+  let buf = "";
+  let timer = null;
+  const TIMEOUT_MS = 60;
+  const MIN_LEN = 4;
+
+  window.addEventListener("keydown", (e) => {
+    if (state.route !== "purchases") return;
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+    const ae = document.activeElement;
+    const isTypingOtherInput =
+      ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA") &&
+      ae.id !== "purBarcodeScan";
+    if (isTypingOtherInput) return;
+
+    const k = e.key;
+
+    if (k === "Enter") {
+      if (buf.length >= MIN_LEN) {
+        const code = buf;
+        buf = "";
+        if (timer) clearTimeout(timer);
+        timer = null;
+
+        handlePurchaseBarcode(code);
+
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      return;
+    }
+
+    if (k.length === 1) {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { buf = ""; }, TIMEOUT_MS);
+
+      if (/^[0-9A-Za-z]$/.test(k)) buf += k;
+    }
+  }, true);
+}
+
+/* ----------------------------
+   Link dialog (separate overlay)
+----------------------------- */
+function showLinkBarcodeDialog(code){
+  const c = normalizeCode(code);
+  if (!c) return;
+
+  const prods = getProducts();
+  if (!prods.length){
+    alert("No products available. Add products first, then link barcode.");
+    return;
+  }
+
+  document.getElementById("lbOverlay")?.remove();
+
+  const overlay = document.createElement("div");
+  overlay.className = "modalOverlay";
+  overlay.id = "lbOverlay";
+  overlay.setAttribute("aria-hidden","false");
+
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="modalHead">
+        <div>
+          <div class="modalTitle">Link New Barcode</div>
+          <div class="modalSub">Barcode <b>${escapeHtml(c)}</b> not found. Link it to an existing product so stock adds to previous stock.</div>
+        </div>
+        <button class="iconBtn" id="lbClose" type="button">✕</button>
+      </div>
+
+      <div class="modalBody">
+        <div class="form" style="padding:0;">
+          <div class="field">
+            <label>Select Product to Link</label>
+            <select id="lbProduct" class="select">
+              ${prods.map(p => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)} (${escapeHtml(p.category||"")})</option>`).join("")}
+            </select>
+          </div>
+
+          <div class="field" style="margin-top:10px;">
+            <label style="display:block; margin:0; font-weight:700; color:rgba(17,24,39,.75);">
+              <input id="lbPrimary" type="checkbox" />
+              &nbsp;Set this barcode as PRIMARY (replace old primary barcode)
+            </label>
+            <div class="note" style="margin-top:8px;">Keep OFF normally. Turn ON only if you want cashier to treat this as main barcode.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modalFoot">
+        <button class="btn ghost" id="lbCancel" type="button">Cancel</button>
+        <button class="btn" id="lbLink" type="button">Link Barcode</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.querySelector("#lbClose")?.addEventListener("click", close);
+  overlay.querySelector("#lbCancel")?.addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+
+  overlay.querySelector("#lbLink")?.addEventListener("click", () => {
+    const pid = overlay.querySelector("#lbProduct")?.value || "";
+    const makePrimary = !!overlay.querySelector("#lbPrimary")?.checked;
+
+    if (!pid) { alert("Select product"); return; }
+
+    linkBarcodeToProduct(pid, c, makePrimary);
+    close();
+
+    const sel = document.getElementById("purProductSelect");
+    if (sel) sel.value = pid;
+
+    const qtyEl = document.getElementById("purQty");
+    if (qtyEl && !String(qtyEl.value || "").trim()) qtyEl.value = "1";
+    document.getElementById("purCost")?.focus();
+  });
+}
+
+/* ----------------------------
+   Save purchase + render history
+----------------------------- */
+async function savePurchaseEntry(){
+  const supplier = (document.getElementById("purSupplier")?.value || "").trim();
+  if (!supplier) { alert("Enter Dealer / Brand name"); return; }
+  if (!purchaseDraft.length) { alert("Add at least 1 item"); return; }
+
+  const invoice = (document.getElementById("purInvoice")?.value || "").trim();
+  const method  = (document.getElementById("purMethod")?.value || "CASH").trim().toUpperCase();
+  const note    = (document.getElementById("purNote")?.value || "").trim();
+  const addToStock = !!document.getElementById("purAddToStock")?.checked;
+
+  const totalPaid = round2(purchaseDraft.reduce((s, x) => s + num(x.lineTotal), 0));
+  const now = new Date();
+  const tsISO = now.toISOString();
+
+  const purchase = {
+    supplier,
+    invoice,
+    method,
+    note,
+    items: purchaseDraft.map(x => ({
+      productId: x.productId,
+      name: x.name,
+      qty: Math.floor(num(x.qty)),
+      cost: round2(num(x.cost)),
+      lineTotal: round2(num(x.lineTotal))
+    })),
+    totalPaid,
+    addToStock,
+    tsISO,
+    ts: tsISO
+  };
+
+  if (addToStock){
+    const prods = getProducts();
+    purchase.items.forEach(it => {
+      const p = prods.find(x => x.id === it.productId);
+      if (p){
+        p.stock = Math.max(0, Math.floor(num(p.stock) + num(it.qty)));
+      }
+    });
+    setProducts(prods);
+  }
+
+  try{
+    if (FB.enabled){
+      const docRef = _purchasesRef().doc();
+      await docRef.set({
+        supplier,
+        invoice,
+        method,
+        note,
+        items: purchase.items,
+        totalPaid,
+        addToStock,
+        tsISO,
+        ts: firebase.firestore.FieldValue.serverTimestamp(),
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge:true });
+    } else {
+      const list = getPurchases();
+      list.unshift({ ...purchase, __docId: `local_${Date.now()}` });
+      setPurchases(list);
+    }
+  } catch(e){
+    console.error("Purchase save failed:", e);
+    alert("Purchase save failed. Open console (F12) and share error.");
+    return;
+  }
+
+  purchaseDraft = [];
+  if (document.getElementById("purSupplier")) document.getElementById("purSupplier").value = "";
+  if (document.getElementById("purInvoice")) document.getElementById("purInvoice").value = "";
+  if (document.getElementById("purNote")) document.getElementById("purNote").value = "";
+
+  renderPurchaseDraft();
+  renderPurchases();
+  alert("Purchase saved ✅");
+}
+
+function getPurchasesFiltered(){
+  let list = getPurchases();
+
+  let from = null, to = null;
+  const preset = document.getElementById("purPreset")?.value || state.purPreset || "all";
+
+  if (preset !== "custom"){
+    const r = getPresetRange(preset);
+    from = r.from; to = r.to;
+  } else {
+    from = state.purFrom ? startOfDay(new Date(state.purFrom)) : null;
+    to   = state.purTo ? endOfDay(new Date(state.purTo)) : null;
+  }
+
+  if (from || to){
+    list = list.filter(p => {
+      const ts = p.ts ? new Date(p.ts) : (p.tsISO ? new Date(p.tsISO) : null);
+      if (!ts || isNaN(ts.getTime())) return false;
+      if (from && ts < from) return false;
+      if (to && ts > to) return false;
+      return true;
+    });
+  }
+
+  const q = (state.purSearch || "").trim().toLowerCase();
+  if (q){
+    list = list.filter(p => {
+      const hay = `${p.supplier||""} ${p.invoice||""} ${(p.items||[]).map(i=>i.name).join(" ")}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }
+
+  return list;
+}
+
+function renderPurchases(){
+  forceAllTableHeaders();
+
+  syncPurchasesDateUI();
+  renderPurchaseDraft();
+  renderPurchaseProductSelect();
+
+  const list = getPurchasesFiltered();
+
+  const totalPaid = list.reduce((s, p) => s + num(p.totalPaid), 0);
+  const count = list.length;
+  const avg = count ? totalPaid / count : 0;
+
+  setText("purTotalPaid", money(totalPaid));
+  setText("purCount", String(count));
+  setText("purAvg", money(avg));
+
+  const body = document.getElementById("purTableBody");
+  if (!body) return;
+
+  body.innerHTML = "";
+
+  list.forEach(p => {
+    const itemsCount = (p.items || []).reduce((s,i)=> s + Math.floor(num(i.qty)), 0);
+    const dateStr = p.ts ? new Date(p.ts).toLocaleString("en-IN") :
+                    (p.tsISO ? new Date(p.tsISO).toLocaleString("en-IN") : "—");
+
+    const row = document.createElement("div");
+    row.className = "trow";
+    forceGrid(row, "0.9fr 1.4fr 0.9fr 0.7fr 0.8fr 0.7fr 0.6fr");
+
+    row.innerHTML = `
+      <div>${escapeHtml(dateStr)}</div>
+      <div style="font-weight:1000">${escapeHtml(p.supplier||"—")}</div>
+      <div>${escapeHtml(p.invoice||"—")}</div>
+      <div>${itemsCount} units</div>
+      <div style="font-weight:1000">${money(num(p.totalPaid))}</div>
+      <div><span class="badge">${escapeHtml(p.method||"—")}</span></div>
+      <div style="display:flex; justify-content:flex-end; gap:10px;">
+        <button class="iconBtn" title="View" type="button">👁</button>
+        <button class="iconBtn" title="Delete" type="button">🗑</button>
+      </div>
+    `;
+
+    const btns = row.querySelectorAll(".iconBtn");
+    const btnView = btns[0];
+    const btnDel = btns[1];
+
+    btnView?.addEventListener("click", () => {
+      const lines = (p.items||[]).map(i => `${i.qty}x ${i.name} @ ${money(i.cost)} = ${money(i.lineTotal)}`).join("\n");
+      alert(`STOCK PURCHASE
+Dealer/Brand: ${p.supplier||""}
+Invoice: ${p.invoice||"—"}
+Method: ${p.method||""}
+Date: ${dateStr}
+
+${lines}
+
+TOTAL PAID: ${money(num(p.totalPaid))}
+Note: ${p.note||"—"}
+Add to Stock: ${p.addToStock ? "YES" : "NO"}`);
+    });
+
+    btnDel?.addEventListener("click", async () => {
+      const ok = confirm(`Delete this purchase entry?\n${p.supplier||""} • ${money(num(p.totalPaid))}`);
+      if (!ok) return;
+
+      try{
+        if (FB.enabled && p.__docId){
+          await _purchasesRef().doc(p.__docId).delete();
+        } else {
+          const next = getPurchases().filter(x => x.__docId !== p.__docId);
+          setPurchases(next);
+          renderPurchases();
+        }
+      } catch(e){
+        console.error("Purchase delete failed:", e);
+        alert("Delete failed. Check console (F12).");
+      }
+    });
+
+    body.appendChild(row);
+  });
+
+  setText("purFoot", `Showing ${list.length} of ${getPurchases().length}`);
 }

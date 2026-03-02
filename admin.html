@@ -33,6 +33,7 @@
       <button class="navItem" data-route="addProduct">➕ Add Product</button>
       <button class="navItem" data-route="orders">🧾 Orders</button>
       <button class="navItem" data-route="reports">📊 Reports</button>
+      <button class="navItem" data-route="purchases">🧾 Stock Purchases</button>
       <button class="navItem" data-route="settings">⚙️ Settings</button>
     </nav>
 
@@ -522,6 +523,183 @@
             <div class="tbody" id="topProductsBody"></div>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- STOCK PURCHASES (INWARD) -->
+    <section class="route" id="route-purchases">
+      <div class="pageRow">
+        <div class="pageTitle">
+          <h1>Stock Purchases</h1>
+          <p>Track dealer/brand purchases (separate from Sales). Optionally auto-add quantity to inventory.</p>
+        </div>
+
+        <div class="pageActions">
+          <select id="purPreset" class="select">
+            <option value="today">Today</option>
+            <option value="week">This Week</option>
+            <option value="month">This Month</option>
+            <option value="year">This Year</option>
+            <option value="all">All Time</option>
+            <option value="custom">Custom</option>
+          </select>
+
+          <input id="purFrom" type="date" class="select">
+          <input id="purTo" type="date" class="select">
+          <button class="btn ghost" id="purApply">Apply</button>
+        </div>
+      </div>
+
+      <div class="kpiGrid">
+        <div class="kpiCard">
+          <div class="kpiLabel">Total Amount Paid</div>
+          <div class="kpiValue" id="purTotalPaid">₹0.00</div>
+          <div class="kpiSub">Only stock purchases (NOT sales)</div>
+        </div>
+
+        <div class="kpiCard">
+          <div class="kpiLabel">Total Purchase Entries</div>
+          <div class="kpiValue" id="purCount">0</div>
+          <div class="kpiSub">Bills / inward entries</div>
+        </div>
+
+        <div class="kpiCard">
+          <div class="kpiLabel">Average Purchase Value</div>
+          <div class="kpiValue" id="purAvg">₹0.00</div>
+          <div class="kpiSub">Total Paid / Entries</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">New Purchase Entry</div>
+              <div class="cardSub">Save dealer/brand purchase + amount paid</div>
+            </div>
+          </div>
+
+          <div class="form">
+            <div class="fieldRow">
+              <div class="field">
+                <label>Dealer / Brand *</label>
+                <input id="purSupplier" type="text" placeholder="e.g. ABC Distributors" />
+              </div>
+              <div class="field">
+                <label>Invoice / Bill No</label>
+                <input id="purInvoice" type="text" placeholder="Optional" />
+              </div>
+            </div>
+
+            <div class="fieldRow">
+              <div class="field">
+                <label>Payment Method</label>
+                <select id="purMethod" class="select">
+                  <option value="CASH">CASH</option>
+                  <option value="UPI">UPI</option>
+                  <option value="CARD">CARD</option>
+                  <option value="BANK">BANK</option>
+                </select>
+              </div>
+
+              <div class="field" style="display:flex; align-items:flex-end; gap:10px;">
+                <label style="display:block; margin:0; font-weight:700; color:rgba(17,24,39,.75);">
+                  <input id="purAddToStock" type="checkbox" checked style="transform: translateY(2px);" />
+                  &nbsp;Also add qty to inventory stock
+                </label>
+              </div>
+            </div>
+
+            <div class="field">
+              <label>Note</label>
+              <input id="purNote" type="text" placeholder="Optional note (scheme, credit, etc.)" />
+            </div>
+
+            <!-- ✅ NEW: BARCODE SCAN INPUT -->
+            <div class="field">
+              <label>Scan Barcode</label>
+              <input id="purBarcodeScan" type="text" placeholder="Scan barcode and press Enter" />
+              <div class="note" style="margin-top:8px;">
+                ✅ If scanned barcode is new, you can link it to an existing product so stock adds to previous stock.
+              </div>
+            </div>
+
+            <div style="height:1px;background:rgba(17,24,39,.10);margin:10px 0;"></div>
+
+            <div class="fieldRow" style="grid-template-columns: 1.4fr .6fr .6fr .4fr;">
+              <div class="field">
+                <label>Product</label>
+                <select id="purProductSelect" class="select"></select>
+              </div>
+              <div class="field">
+                <label>Qty</label>
+                <input id="purQty" type="number" min="1" step="1" placeholder="e.g. 24" />
+              </div>
+              <div class="field">
+                <label>Cost / Unit (₹)</label>
+                <input id="purCost" type="number" min="0" step="0.01" placeholder="e.g. 95" />
+              </div>
+              <div class="field" style="align-self:flex-end;">
+                <button class="btn" id="purAddItem" type="button">Add</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">This Purchase Items</div>
+              <div class="cardSub">Draft list before saving</div>
+            </div>
+            <div style="display:flex; gap:10px; align-items:center;">
+              <div style="font-weight:1000;color:rgba(17,24,39,.8);" id="purDraftTotal">Total: ₹0.00</div>
+              <button class="btn danger" id="purClearDraft" type="button">Clear</button>
+              <button class="btn" id="purSave" type="button">Save Purchase</button>
+            </div>
+          </div>
+
+          <div class="table">
+            <div class="thead" id="purDraftHead">
+              <div>Product</div>
+              <div>Qty</div>
+              <div>Cost</div>
+              <div>Line Total</div>
+              <div>Action</div>
+            </div>
+            <div class="tbody" id="purDraftBody"></div>
+          </div>
+
+          <div class="tableFoot" id="purDraftFoot">Add items to build this purchase entry.</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:14px;">
+        <div class="cardHead">
+          <div>
+            <div class="cardTitle">Purchase History</div>
+            <div class="cardSub">Separate from orders/sales</div>
+          </div>
+
+          <div class="searchWrap" style="max-width:420px;">
+            <span class="searchIcon">⌕</span>
+            <input id="purSearch" type="text" placeholder="Search dealer / invoice / product..." />
+          </div>
+        </div>
+
+        <div class="table">
+          <div class="thead" id="purTableHead">
+            <div>Date</div>
+            <div>Dealer / Brand</div>
+            <div>Invoice</div>
+            <div>Items</div>
+            <div>Paid</div>
+            <div>Method</div>
+            <div>Action</div>
+          </div>
+          <div class="tbody" id="purTableBody"></div>
+        </div>
+        <div class="tableFoot" id="purFoot">Showing 0 of 0</div>
       </div>
     </section>
 

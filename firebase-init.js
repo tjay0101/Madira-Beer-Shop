@@ -1,7 +1,10 @@
-// firebase-init.js ✅ (CDN module + exposes window.fb)
-// Put this file on your server and load with: <script type="module" src="./firebase-init.js"></script>
+// firebase-init.js ✅ (MODULE) — FULL COPY-PASTE
+// Loads Modular Firebase SDK safely (no duplicate init)
+// Exposes window.fb helpers (optional)
+// Uses SAME Firestore structure as cashier/admin compat code:
+// shops/{SHOP_ID}/(categories,products,orders,purchases)
 
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-app.js";
+import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-app.js";
 
 import {
   getFirestore,
@@ -9,6 +12,7 @@ import {
   doc,
   setDoc,
   getDocs,
+  getDoc,
   deleteDoc,
   query,
   where,
@@ -35,23 +39,26 @@ const firebaseConfig = {
   measurementId: "G-DN6WLYYWLT"
 };
 
-/* ✅ Must match your localStorage keys */
+/* ✅ Must match your actual shop id used in cashier/admin */
+const SHOP_ID = "madira";
+
+/* ✅ LocalStorage keys used across app */
 const LS_PRODUCTS   = "madira_products_v1";
 const LS_CATEGORIES = "madira_categories_v1";
 const LS_ORDERS     = "madira_orders_v1";
+const LS_PURCHASES  = "madira_purchases_v1";
 
-/* ✅ Optional: store separation */
-const STORE_ID = "madira_store_1";
-
-/* ------------------ init ------------------ */
-const app  = initializeApp(firebaseConfig);
+/* ------------------ init (safe) ------------------ */
+const app  = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const db   = getFirestore(app);
 const auth = getAuth(app);
 
 /* ------------------ firestore paths ------------------ */
-const colCats   = () => collection(db, "stores", STORE_ID, "categories");
-const colProds  = () => collection(db, "stores", STORE_ID, "products");
-const colOrders = () => collection(db, "stores", STORE_ID, "orders");
+const shopDoc = () => doc(db, "shops", SHOP_ID);
+const colCats      = () => collection(db, "shops", SHOP_ID, "categories");
+const colProds     = () => collection(db, "shops", SHOP_ID, "products");
+const colOrders    = () => collection(db, "shops", SHOP_ID, "orders");
+const colPurchases = () => collection(db, "shops", SHOP_ID, "purchases");
 
 /* ------------------ helpers ------------------ */
 function startOfDay(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0,0,0,0); }
@@ -59,7 +66,6 @@ function endOfDay(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate()
 
 function safeJSON(str, fallback){ try { return JSON.parse(str); } catch { return fallback; } }
 
-/** Firestore doc IDs cannot contain "/" etc. This keeps your IDs safe. */
 function toDocId(input){
   return String(input ?? "")
     .trim()
@@ -90,37 +96,28 @@ function downloadText(text, filename, mime){
   URL.revokeObjectURL(url);
 }
 
-/* ------------------ AUTH (required for your writes if rules demand auth) ------------------ */
+/* ------------------ AUTH (anon) ------------------ */
 let _authReady = null;
 
 async function ensureAnonAuth(){
   if (auth.currentUser) return auth.currentUser;
-
   if (_authReady) return _authReady;
 
   _authReady = (async () => {
-    // Wait briefly if auth state is already resolving
     await new Promise((resolve) => {
       const unsub = onAuthStateChanged(auth, () => { unsub(); resolve(); });
     });
 
     if (auth.currentUser) return auth.currentUser;
 
-    try {
-      await signInAnonymously(auth);
-      return auth.currentUser;
-    } catch (e) {
-      // This is where your current error is coming from.
-      // Fix: enable Anonymous sign-in + allow signups + ensure domain/API-key restrictions are correct.
-      console.error("Anonymous auth failed:", e?.code, e?.message, e);
-      throw e;
-    }
+    await signInAnonymously(auth);
+    return auth.currentUser;
   })();
 
   return _authReady;
 }
 
-/* ------------------ write (upsert) ------------------ */
+/* ------------------ Categories ------------------ */
 async function upsertCategory(cat){
   await ensureAnonAuth();
   const name = String(cat?.name || "").trim();
@@ -141,14 +138,14 @@ async function deleteCategory(name){
   await deleteDoc(doc(colCats(), id));
 }
 
+/* ------------------ Products ------------------ */
 async function upsertProduct(product){
   await ensureAnonAuth();
   const rawId = String(product?.id || "").trim();
   if (!rawId) throw new Error("Product id missing");
 
-  const id = toDocId(rawId);
   await setDoc(
-    doc(colProds(), id),
+    doc(colProds(), rawId),
     { ...product, id: rawId, updatedAt: serverTimestamp() },
     { merge:true }
   );
@@ -156,42 +153,78 @@ async function upsertProduct(product){
 
 async function deleteProduct(id){
   await ensureAnonAuth();
-  const pid = toDocId(id);
+  const pid = String(id || "").trim();
   if (!pid) return;
   await deleteDoc(doc(colProds(), pid));
 }
 
-function normalizeOrderForCloud(order){
-  const ts = order?.ts ? new Date(order.ts) : new Date();
-  return { ...order, ts, updatedAt: new Date() }; // Firestore stores Date as Timestamp
-}
-
-async function saveOrder(order){
+/* ------------------ Orders ------------------ */
+async function saveOrder(docIdOrReceiptId, order){
   await ensureAnonAuth();
-  const rid = String(order?.receiptId || "").trim();
-  if (!rid) throw new Error("receiptId missing");
+  const id = String(docIdOrReceiptId || order?.receiptId || "").trim();
+  if (!id) throw new Error("Order id missing");
 
-  const payload = normalizeOrderForCloud(order);
-  await setDoc(doc(colOrders(), rid), payload, { merge:true });
+  const tsISO = order?.tsISO || order?.ts || new Date().toISOString();
+  const ts = Timestamp.fromDate(new Date(tsISO));
+
+  await setDoc(
+    doc(colOrders(), id),
+    { ...order, receiptId: order?.receiptId || id, tsISO, ts, updatedAt: serverTimestamp() },
+    { merge:true }
+  );
 }
 
-/* ------------------ read ------------------ */
+async function deleteOrder(docId){
+  await ensureAnonAuth();
+  const id = String(docId || "").trim();
+  if (!id) return;
+  await deleteDoc(doc(colOrders(), id));
+}
+
+/* ------------------ Purchases (NEW) ------------------ */
+async function savePurchase(docId, purchase){
+  await ensureAnonAuth();
+  const id = docId ? String(docId).trim() : null;
+
+  const tsISO = purchase?.tsISO || purchase?.ts || new Date().toISOString();
+  const ts = Timestamp.fromDate(new Date(tsISO));
+
+  if (id){
+    await setDoc(
+      doc(colPurchases(), id),
+      { ...purchase, tsISO, ts, updatedAt: serverTimestamp() },
+      { merge:true }
+    );
+    return id;
+  } else {
+    const auto = doc(colPurchases());
+    await setDoc(
+      auto,
+      { ...purchase, tsISO, ts, createdAt: serverTimestamp(), updatedAt: serverTimestamp() },
+      { merge:true }
+    );
+    return auto.id;
+  }
+}
+
+async function deletePurchase(docId){
+  await ensureAnonAuth();
+  const id = String(docId || "").trim();
+  if (!id) return;
+  await deleteDoc(doc(colPurchases(), id));
+}
+
+/* ------------------ reads ------------------ */
 async function fetchCategories(){
   await ensureAnonAuth();
   const snap = await getDocs(colCats());
-  return snap.docs.map(d => {
-    const data = d.data() || {};
-    return { id: d.id, name: data.name || d.id, icon: data.icon || "•" };
-  });
+  return snap.docs.map(d => d.data()).filter(Boolean);
 }
 
 async function fetchProducts(){
   await ensureAnonAuth();
   const snap = await getDocs(colProds());
-  return snap.docs.map(d => {
-    const data = d.data() || {};
-    return { ...data, _docId: d.id, id: data.id || d.id };
-  });
+  return snap.docs.map(d => d.data()).filter(Boolean);
 }
 
 async function fetchOrdersByDate(fromDate, toDate){
@@ -203,91 +236,118 @@ async function fetchOrdersByDate(fromDate, toDate){
       colOrders(),
       where("ts", ">=", Timestamp.fromDate(fromDate)),
       where("ts", "<=", Timestamp.fromDate(toDate)),
-      orderBy("ts", "asc")
+      orderBy("ts", "desc"),
+      limit(5000)
     );
   } else {
-    qRef = query(colOrders(), orderBy("ts", "desc"), limit(2000));
+    qRef = query(colOrders(), orderBy("ts", "desc"), limit(5000));
   }
 
   const snap = await getDocs(qRef);
   return snap.docs.map(d => {
     const data = d.data() || {};
-    const ts =
-      data.ts?.toDate ? data.ts.toDate() :
-      (data.ts instanceof Date ? data.ts : null);
+    const ts = data.ts?.toDate ? data.ts.toDate() : null;
+    return { ...data, ts: ts ? ts.toISOString() : (data.tsISO || ""), __docId: d.id };
+  });
+}
 
-    return {
-      id: d.id,
-      ...data,
-      receiptId: data.receiptId || d.id,
-      ts: ts ? ts.toISOString() : ""
-    };
+async function fetchPurchasesByDate(fromDate, toDate){
+  await ensureAnonAuth();
+
+  let qRef;
+  if (fromDate && toDate){
+    qRef = query(
+      colPurchases(),
+      where("ts", ">=", Timestamp.fromDate(fromDate)),
+      where("ts", "<=", Timestamp.fromDate(toDate)),
+      orderBy("ts", "desc"),
+      limit(5000)
+    );
+  } else {
+    qRef = query(colPurchases(), orderBy("ts", "desc"), limit(5000));
+  }
+
+  const snap = await getDocs(qRef);
+  return snap.docs.map(d => {
+    const data = d.data() || {};
+    const ts = data.ts?.toDate ? data.ts.toDate() : null;
+    return { ...data, ts: ts ? ts.toISOString() : (data.tsISO || ""), __docId: d.id };
   });
 }
 
 /* ------------------ sync to localStorage ------------------ */
 async function pullAllToLocalStorage(){
-  const [cats, prods, orders] = await Promise.all([
+  const [cats, prods, orders, purchases] = await Promise.all([
     fetchCategories(),
     fetchProducts(),
-    fetchOrdersByDate(null, null)
+    fetchOrdersByDate(null, null),
+    fetchPurchasesByDate(null, null)
   ]);
 
-  localStorage.setItem(
-    LS_CATEGORIES,
-    JSON.stringify(cats.map(c => ({ name: c.name, icon: c.icon || "•" })))
-  );
+  localStorage.setItem(LS_CATEGORIES, JSON.stringify(cats));
   localStorage.setItem(LS_PRODUCTS, JSON.stringify(prods));
   localStorage.setItem(LS_ORDERS, JSON.stringify(orders));
+  localStorage.setItem(LS_PURCHASES, JSON.stringify(purchases));
 }
 
-/* ------------------ export CSV ------------------ */
-async function downloadOrdersCSV(fromISO, toISO){
+/* ------------------ export CSV helpers ------------------ */
+async function downloadPurchasesCSV(fromISO, toISO){
   const from = fromISO ? startOfDay(new Date(fromISO)) : null;
-  const to   = toISO   ? endOfDay(new Date(toISO)) : null;
+  const to   = toISO ? endOfDay(new Date(toISO)) : null;
 
-  const orders = await fetchOrdersByDate(from, to);
+  const purchases = await fetchPurchasesByDate(from, to);
 
   const flat = [];
-  orders.forEach(o=>{
-    (o.items||[]).forEach(it=>{
+  purchases.forEach(p=>{
+    (p.items||[]).forEach(it=>{
       flat.push({
-        receiptId: o.receiptId || "",
-        ts: o.ts || "",
-        cashier: o.cashier || "",
-        terminal: o.terminal || "",
-        method: o.method || "",
-        status: o.status || "",
-        itemName: it.name || "",
-        qty: it.qty || 0,
-        unitPrice: it.price || 0,
-        lineTotal: (Number(it.price||0) * Number(it.qty||0)),
-        orderTotal: o.amount || 0
+        ts: p.ts || "",
+        supplier: p.supplier || "",
+        invoice: p.invoice || "",
+        method: p.method || "",
+        addToStock: p.addToStock ? "YES" : "NO",
+        product: it.name || "",
+        qty: Number(it.qty||0),
+        cost: Number(it.cost||0),
+        lineTotal: Number(it.lineTotal||0),
+        totalPaid: Number(p.totalPaid||0),
+        note: p.note || ""
       });
     });
   });
 
   const csv = toCSV(flat);
   const labelFrom = fromISO || "ALL";
-  const labelTo   = toISO || "ALL";
-  downloadText(csv, `madira_orders_${labelFrom}_to_${labelTo}.csv`, "text/csv");
+  const labelTo = toISO || "ALL";
+  downloadText(csv, `madira_purchases_${labelFrom}_to_${labelTo}.csv`, "text/csv");
 }
 
-/* ✅ Expose to your existing scripts */
+/* ✅ Expose to your existing scripts (optional usage) */
 window.fb = {
+  app,
   db,
   auth,
+  shopDoc,
   ensureAnonAuth,
+
   upsertCategory,
   deleteCategory,
   upsertProduct,
   deleteProduct,
+
   saveOrder,
+  deleteOrder,
+
+  savePurchase,
+  deletePurchase,
+
   fetchCategories,
   fetchProducts,
   fetchOrdersByDate,
+  fetchPurchasesByDate,
+
   pullAllToLocalStorage,
-  downloadOrdersCSV
+  downloadPurchasesCSV
 };
 
-console.log("✅ Firebase ready:", firebaseConfig.projectId, "STORE_ID:", STORE_ID);
+console.log("✅ Firebase-init ready:", firebaseConfig.projectId, "SHOP_ID:", SHOP_ID);

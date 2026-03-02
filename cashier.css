@@ -601,13 +601,6 @@ body{
   .shell.salesMode .tr{ min-width: 900px !important; }
 }
 
-
-
-
-
-
-
-
 /* ===== FORCE SINGLE-LINE FILTER TABS (OVERRIDE) ===== */
 #subFilterRow,
 #variantFilterRow{
@@ -628,4 +621,22 @@ body{
 #variantFilterRow .pill{
   flex:0 0 auto !important;
   white-space:nowrap !important;
+}
+
+/* =========================================================
+   FIX: Cart column height 80vh so COMPLETE SALE stays visible
+   (ONLY the items list scrolls)
+   ========================================================= */
+.cartPanel{
+  height: 80vh !important;
+  max-height: 80vh !important;
+  align-self: start;
+  min-height: 0;
+}
+.cartItems{
+  overflow-y: auto !important;
+  min-height: 0;
+}
+.cartTotals{
+  flex: 0 0 auto;
 }
