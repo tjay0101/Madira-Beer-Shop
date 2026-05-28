@@ -1,4 +1,4 @@
-/* cashier.css (LIGHT THEME) — FULL UPDATED (copy-paste entire file) */
+/* cashier.css (LIGHT THEME) — ENHANCED FOR VISIBILITY */
 :root{
   --bg:#f6f7fb;
   --panel:#ffffff;
@@ -219,8 +219,8 @@ body{
 /* TERMINAL GRID */
 .terminalGrid{
   display:grid;
-  grid-template-columns: 1fr 340px;
-  gap:14px;
+  grid-template-columns: 1fr 480px; /* ✅ Even wider cart panel for better visibility */
+  gap:18px;
   height: calc(100vh - 64px - 16px - 16px - 52px - 12px);
   min-height: 560px;
 }
@@ -228,15 +228,15 @@ body{
   border-radius:16px;
   background: #fff;
   border:1px solid var(--stroke);
-  padding:12px;
+  padding:16px;
   display:flex;
   flex-direction:column;
   box-shadow: var(--shadow);
 }
 .productsGrid{
   display:grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap:12px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); /* ✅ Auto-fill for better fit */
+  gap:16px;
   overflow:auto;
   padding-right:4px;
 }
@@ -250,18 +250,18 @@ body{
 }
 .productCard:hover{transform: translateY(-2px); box-shadow: 0 10px 22px rgba(17,24,39,.08)}
 .pImg{
-  height:110px;
+  height:120px;
   background: radial-gradient(180px 120px at 30% 20%, rgba(246,197,74,.28), rgba(17,24,39,.03));
   display:grid; place-items:center;
   border-bottom:1px solid var(--stroke);
 }
-.pImg img{width:58px; height:58px; object-fit:contain; filter: drop-shadow(0 12px 16px rgba(0,0,0,.18))}
-.pBody{padding:10px}
-.pName{font-weight:1000; font-size:12px}
-.pMeta{color:var(--muted); font-size:11px; margin-top:4px}
+.pImg img{width:70px; height:70px; object-fit:contain; filter: drop-shadow(0 12px 16px rgba(0,0,0,.18))}
+.pBody{padding:14px}
+.pName{font-weight:1000; font-size:17px; line-height: 1.3;} /* ✅ Large & Clear product names */
+.pMeta{color:var(--muted); font-size:13px; margin-top:4px}
 .pBottom{display:flex; align-items:center; justify-content:space-between; margin-top:10px}
-.pPrice{font-weight:1000; color:#92400e}
-.pStock{font-size:11px; color:var(--muted)}
+.pPrice{font-weight:1000; color:#92400e; font-size: 18px;} /* ✅ Prominent price */
+.pStock{font-size:13px; color:var(--muted)}
 
 .bottomHints{
   display:flex; gap:16px;
@@ -289,83 +289,90 @@ body{
   flex-direction:column;
   overflow:hidden;
   box-shadow: var(--shadow);
+  height: 80vh !important;
+  max-height: 80vh !important;
+  align-self: start;
 }
 .cartHeader{
-  padding:12px 12px 10px;
+  padding:16px 18px;
   border-bottom:1px solid var(--stroke);
   display:flex;
-  align-items:flex-start;
+  align-items:center;
   justify-content:space-between;
 }
-.cartTitle{font-weight:1000}
-.cartMeta{font-size:11px; color:var(--muted); margin-top:4px}
+.cartTitle{font-weight:1000; font-size: 20px;}
+.cartMeta{font-size:14px; color:var(--muted)}
 .linkBtn{
   border:none;
   background:transparent;
   color:#92400e;
   font-weight:1000;
   cursor:pointer;
+  font-size: 13px;
 }
 .linkBtn.danger{color:#b91c1c}
 
 .cartItems{
-  padding:10px;
-  overflow:auto;
+  padding:14px;
+  overflow-y: auto !important;
   flex:1;
   display:flex;
   flex-direction:column;
-  gap:10px;
+  gap:12px;
 }
 .cartItem{
   border:1px solid var(--stroke);
   background: #fff;
   border-radius:14px;
-  padding:10px;
+  padding:14px;
   display:flex;
-  gap:10px;
+  gap:14px;
   align-items:center;
 }
 .cThumb{
-  width:40px; height:40px;
+  width:60px; height:60px;
   border-radius:12px;
   border:1px solid var(--stroke);
   background: rgba(246,197,74,.20);
   display:grid; place-items:center;
 }
-.cThumb img{width:28px; height:28px; object-fit:contain}
+.cThumb img{width:40px; height:40px; object-fit:contain}
 .cInfo{flex:1}
-.cName{font-weight:1000; font-size:12px}
-.cSub{font-size:11px; color:var(--muted); margin-top:2px}
+.cName{font-weight:1000; font-size:17px; line-height: 1.3;} /* ✅ Large font in cart */
+.cSub{font-size:13px; color:var(--muted); margin-top:4px}
 
-.qtyBox{display:flex; align-items:center; gap:6px;}
+.qtyBox{display:flex; align-items:center; gap:10px;}
 .qtyBtn{
-  width:28px; height:28px;
+  width:36px; height:36px;
   border-radius:10px;
   border:1px solid var(--stroke);
   background: #fff;
   color:var(--text);
   cursor:pointer;
   font-weight:1000;
+  font-size: 18px;
 }
-.qtyVal{min-width:18px; text-align:center; font-weight:1000}
-.cPrice{font-weight:1000; color:#92400e; min-width:64px; text-align:right}
+.qtyVal{min-width:28px; text-align:center; font-weight:1000; font-size: 18px;}
+.cPrice{font-weight:1000; color:#92400e; min-width:90px; text-align:right; font-size: 18px;}
 
 .cartTotals{
-  padding:12px;
+  padding:20px;
   border-top:1px solid var(--stroke);
   background: var(--panel2);
+  flex: 0 0 auto;
 }
-.totRow{display:flex; justify-content:space-between; font-size:12px; margin-bottom:8px}
-.totRow.total{font-size:14px; font-weight:1000}
-.cartActions{display:flex; gap:10px; margin:10px 0 12px}
+.totRow{display:flex; justify-content:space-between; font-size: 16px; margin-bottom:10px}
+.totRow.total{font-size:22px; font-weight:1000; margin-bottom:15px} /* ✅ Big Total Amount */
+.cartActions{display:flex; gap:12px; margin:12px 0 16px}
 .btnPrimary{
   width:100%;
-  height:46px;
+  height:60px;
   border:none;
-  border-radius:14px;
+  border-radius:16px;
   cursor:pointer;
   font-weight:1100;
-  letter-spacing:.3px;
+  font-size: 18px;
+  letter-spacing:.5px;
   background: linear-gradient(180deg, rgba(246,197,74,.95), rgba(216,168,47,.95));
   color:#1a1204;
   box-shadow: 0 16px 26px rgba(246,197,74,.22);
