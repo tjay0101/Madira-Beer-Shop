@@ -148,7 +148,11 @@ async function fbInitAndSync(){
     FB.uid = FB.auth.currentUser?.uid || null;
     FB.enabled = true;
 
-    await fbBootstrapIfEmpty();
+    try {
+      await fbBootstrapIfEmpty();
+    } catch (e) {
+      console.warn("Firebase bootstrap skipped; realtime sync will still start.", e);
+    }
     fbStartRealtimeSync();
 
     return true;
@@ -265,18 +269,19 @@ function fbStartRealtimeSync(){
   });
 
   FB.unsub.orders = _ordersRef()
-    .orderBy("ts", "desc")
     .limit(5000)
     .onSnapshot((snap)=>{
-      const orders = snap.docs.map(d => {
+      const orders = sortOrdersDesc(snap.docs.map(d => {
         const x = d.data() || {};
-        const tsISO = x.ts?.toDate ? x.ts.toDate().toISOString() : (x.tsISO || x.ts || "");
-        return { ...x, ts: tsISO, __docId: d.id };
-      });
+        return normalizeOrder({ ...x, __docId: d.id });
+      }));
       localStorage.setItem(LS_ORDERS, JSON.stringify(orders));
       if (state.route === "orders") renderOrders();
       if (state.route === "reports") renderReports();
       if (state.route === "dashboard") renderDashboard();
+    }, (e)=>{
+      console.warn("Firebase orders sync failed:", e);
+      if (state.route === "orders") setText("ordersFoot", "Orders sync failed. Check Firebase access and refresh.");
     });
 
   FB.unsub.purchases = _purchasesRef()
@@ -402,6 +407,7 @@ async function boot(){
   bindInventoryControls();
   bindAddProductForm();
   bindOrdersControls();
+  bindOrderCacheUpdates();
   bindReportsControls();
   bindSettingsControls();
   bindModalControls();
@@ -474,7 +480,69 @@ function setProducts(prods){
 
 function getOrders(){
   const orders = safeJSON(localStorage.getItem(LS_ORDERS), []);
-  return Array.isArray(orders) ? orders : [];
+  return Array.isArray(orders) ? sortOrdersDesc(orders.map(normalizeOrder)) : [];
+}
+
+function bindOrderCacheUpdates(){
+  window.addEventListener("storage", (e) => {
+    if (e.key === LS_ORDERS) refreshOrderScreens();
+  });
+
+  if ("BroadcastChannel" in window) {
+    const channel = new BroadcastChannel("madira_orders");
+    channel.onmessage = (event) => {
+      const order = normalizeOrder(event.data || {});
+      if (!order.receiptId) return;
+
+      const next = getOrders().filter(o => o.receiptId !== order.receiptId);
+      next.unshift(order);
+      localStorage.setItem(LS_ORDERS, JSON.stringify(sortOrdersDesc(next).slice(0, 5000)));
+      refreshOrderScreens();
+    };
+  }
+}
+
+function refreshOrderScreens(){
+  if (state.route === "orders") renderOrders();
+  if (state.route === "reports") renderReports();
+  if (state.route === "dashboard") renderDashboard();
+}
+
+function normalizeOrder(order){
+  const o = order || {};
+  const ts = timestampToISO(o.ts) || timestampToISO(o.tsISO) || timestampToISO(o.createdAt) || "";
+  return {
+    ...o,
+    ts,
+    tsISO: o.tsISO || ts,
+    status: o.status || "COMPLETED"
+  };
+}
+
+function timestampToISO(value){
+  if (!value) return "";
+  if (value.toDate) {
+    const d = value.toDate();
+    return Number.isNaN(d.getTime()) ? "" : d.toISOString();
+  }
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "" : d.toISOString();
+}
+
+function orderDate(order){
+  const ts = timestampToISO(order?.ts) || timestampToISO(order?.tsISO) || timestampToISO(order?.createdAt);
+  if (!ts) return null;
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function sortOrdersDesc(orders){
+  return [...(orders || [])].sort((a, b) => {
+    const at = orderDate(a)?.getTime() || 0;
+    const bt = orderDate(b)?.getTime() || 0;
+    if (bt !== at) return bt - at;
+    return num(b?.seq) - num(a?.seq);
+  });
 }
 
 function getPurchases(){
@@ -620,7 +688,7 @@ function renderDashboard(){
 
   const orders = getOrders();
   const todayKey = isoDateKey(new Date());
-  const todays = orders.filter(o => (o.ts||"").slice(0,10) === todayKey);
+  const todays = orders.filter(o => isoDateKey(o.ts || o.tsISO) === todayKey);
 
   const todayRevenue = todays.reduce((s,o)=> s + num(o.amount), 0);
   const tx = todays.length;
@@ -711,7 +779,7 @@ function drawTrendChart(){
     const key = isoDateKey(d);
     labels.push(d.toLocaleDateString("en-IN", { weekday:"short" }));
     const revenue = orders
-      .filter(o => (o.ts||"").slice(0,10) === key)
+      .filter(o => isoDateKey(o.ts || o.tsISO) === key)
       .reduce((s,o)=> s + num(o.amount), 0);
     vals.push(revenue);
   }
@@ -1043,7 +1111,7 @@ function renderOrders(){
   const ordersAll = getOrders();
 
   const todayKey = isoDateKey(new Date());
-  const todays = ordersAll.filter(o => (o.ts||"").slice(0,10) === todayKey);
+  const todays = ordersAll.filter(o => isoDateKey(o.ts || o.tsISO) === todayKey);
 
   const todayRevenue = todays.reduce((s,o)=> s + num(o.amount), 0);
   setText("ordTodayCount", String(todays.length));
@@ -1744,7 +1812,11 @@ function round2(n){
 }
 function isoDateKey(d){
   const x = new Date(d);
-  return x.toISOString().slice(0,10);
+  if (Number.isNaN(x.getTime())) return "";
+  const y = x.getFullYear();
+  const m = String(x.getMonth() + 1).padStart(2, "0");
+  const day = String(x.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 function fmtTime(ts){
   if (!ts) return "—";
@@ -1865,7 +1937,7 @@ function getPresetRange(preset){
 function filterOrdersByDate(orders, from, to){
   if (!from && !to) return orders;
   return orders.filter(o=>{
-    const ts = o.ts ? new Date(o.ts) : null;
+    const ts = orderDate(o);
     if (!ts) return false;
     if (from && ts < from) return false;
     if (to && ts > to) return false;

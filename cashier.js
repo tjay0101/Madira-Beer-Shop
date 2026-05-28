@@ -36,6 +36,7 @@ const FIREBASE_CONFIG = {
 
 const FIREBASE_CDN_VERSION = "12.9.0";
 const FIREBASE_SHOP_ID = "madira";
+const LS_ORDERS = "madira_orders_v1";
 
 let FB = {
   enabled: false,
@@ -732,7 +733,7 @@ async function checkoutAndSave(method) {
       seq,
       receiptId,
       tsISO,
-      ts: firebase.firestore.FieldValue.serverTimestamp(),
+      ts: firebase.firestore.Timestamp.fromDate(now),
       timeLabel: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       items: cart.map(l => ({
         id: l.id,
@@ -750,7 +751,9 @@ async function checkoutAndSave(method) {
       terminal: SESSION.terminal,
       cashier: SESSION.cashierName,
       subtotal: round2(subtotal),
-      tax: round2(tax)
+      tax: round2(tax),
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     };
 
     tx.set(_ordersRef().doc(orderDocId), order, { merge: true });
@@ -758,14 +761,15 @@ async function checkoutAndSave(method) {
   });
 
   ORDERS.unshift(result);
+  cacheOrderLocally(result);
   return result;
 }
 
 /* ---------------------- SALES VIEW ---------------------- */
 function refreshSalesView() {
   const today = new Date();
-  const todayKey = today.toISOString().slice(0, 10);
-  const todays = ORDERS.filter(o => (o.ts || "").slice(0, 10) === todayKey);
+  const todayKey = localDateKey(today);
+  const todays = ORDERS.filter(o => localDateKey(o.ts || o.tsISO) === todayKey);
 
   const salesDateEl = document.getElementById("salesDate");
   if (salesDateEl) {
@@ -921,6 +925,48 @@ function money(n) {
 
 function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+function localDateKey(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function cacheOrderLocally(order) {
+  try {
+    const clean = {
+      seq: order.seq,
+      receiptId: order.receiptId,
+      tsISO: order.tsISO || order.ts || new Date().toISOString(),
+      ts: order.tsISO || order.ts || new Date().toISOString(),
+      timeLabel: order.timeLabel || "",
+      items: Array.isArray(order.items) ? order.items : [],
+      method: order.method || DEFAULT_PAYMENT_METHOD,
+      amount: Number(order.amount || 0),
+      status: order.status || "COMPLETED",
+      terminal: order.terminal || SESSION.terminal,
+      cashier: order.cashier || SESSION.cashierName,
+      subtotal: Number(order.subtotal || 0),
+      tax: Number(order.tax || 0)
+    };
+
+    const list = JSON.parse(localStorage.getItem(LS_ORDERS) || "[]");
+    const next = Array.isArray(list)
+      ? list.filter(o => o.receiptId !== clean.receiptId)
+      : [];
+    next.unshift(clean);
+    localStorage.setItem(LS_ORDERS, JSON.stringify(next.slice(0, 5000)));
+
+    if ("BroadcastChannel" in window) {
+      const channel = new BroadcastChannel("madira_orders");
+      channel.postMessage(clean);
+      channel.close();
+    }
+  } catch {}
 }
 
 function initials(name) {
