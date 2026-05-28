@@ -1,27 +1,19 @@
 /* =========================================================
-   cashier.js (FIREBASE SOURCE OF TRUTH)
-   - Firestore realtime for Products/Categories/Orders/Staff
-   - NO LocalStorage cache for products/categories
-   - Cart auto-removes deleted products
-   - Sales uses Firestore orders snapshot (memory)
-   - Cashier name stored in: shops/{shopId}/staff/{uid}
-
-   ✅ FIXES INCLUDED
-   1) TAX = 0%  (GST removed)
-   2) Total always updates
-   3) Logout is HARD + clears auth/session keys
-   4) Sub + Variant filters in ONE LINE + ONE All tab only
-   5) Selecting Sub will NOT hide Variants (650ml stays), and vice-versa
-   6) ✅ Barcode scanner auto-add (keyboard-wedge)
-   7) ✅ COMPLETE SALE directly completes (no payment modal)
-
-========================================================= */
+   cashier.js (FIREBASE SOURCE OF TRUTH) — FULL COPY-PASTE
+   ✅ Firestore realtime for Products/Categories/Orders/Staff
+   ✅ Complete Sale directly saves order
+   ✅ Barcode scanner supports:
+      - product.barcode (primary)
+      - product.barcodes[] (linked/new barcodes from Admin Purchases)
+   ✅ Broadcasts completed orders to Admin page + localStorage cache
+   ========================================================= */
 
 const TAX_RATE = 0.00;
 const SHOP_NAME = "Madira Beer Shop";
+const DEFAULT_PAYMENT_METHOD = "CARD";
 
-/* ✅ Default payment for direct checkout (no modal) */
-const DEFAULT_PAYMENT_METHOD = "CARD"; // change to "CASH" or "UPI" if you want
+/* ---------------------- LOCAL STORAGE KEYS ---------------------- */
+const LS_ORDERS = "madira_orders_v1";
 
 /* ---------------------- FIREBASE CONFIG ---------------------- */
 const FIREBASE_CONFIG = {
@@ -36,7 +28,6 @@ const FIREBASE_CONFIG = {
 
 const FIREBASE_CDN_VERSION = "12.9.0";
 const FIREBASE_SHOP_ID = "madira";
-const LS_ORDERS = "madira_orders_v1";
 
 let FB = {
   enabled: false,
@@ -46,37 +37,29 @@ let FB = {
   unsub: { cats: null, prods: null, orders: null, staff: null }
 };
 
-/* ---------------------- DATA (Firestore -> memory) ---------------------- */
+/* ---------------------- DATA ---------------------- */
 let PRODUCTS = [];
 let CATEGORIES = [];
 let ORDERS = [];
 
-/* ✅ Filters */
 let activeCategory = "Beers";
 let activeSub = "All";
 let activeVariant = "All";
 let searchQuery = "";
 
-/* Cart */
-let cart = []; // {id,name,price,qty,barcode,category,sub,size,image}
-let selectedPayment = DEFAULT_PAYMENT_METHOD;
-
+let cart = [];
 let SESSION = { cashierName: "Cashier", terminal: "Terminal 01" };
 
 /* ---------------------- BOOT ---------------------- */
 document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btnSelectDate")?.remove();
 
-  // Init Firebase (required)
   await fbInitOrFail();
 
   bindTopbar();
   bindTabs();
-
-  // ✅ Barcode scan handler (must be attached after PRODUCTS will load too)
   bindBarcodeScanner();
 
-  // Initial UI
   activeCategory = CATEGORIES[0]?.name || "Beers";
   activeSub = "All";
   activeVariant = "All";
@@ -130,9 +113,7 @@ async function fbInitOrFail() {
     FB.auth = firebase.auth();
     FB.db = firebase.firestore();
 
-    if (!FB.auth.currentUser) {
-      await FB.auth.signInAnonymously();
-    }
+    if (!FB.auth.currentUser) await FB.auth.signInAnonymously();
     FB.uid = FB.auth.currentUser?.uid || null;
     FB.enabled = true;
 
@@ -151,24 +132,20 @@ async function fbInitOrFail() {
 
 async function ensureCountersDoc() {
   const doc = await _metaRef().get();
-  if (!doc.exists) {
-    await _metaRef().set({ posSeq: 1020 }, { merge: true });
-  }
+  if (!doc.exists) await _metaRef().set({ posSeq: 1020 }, { merge: true });
 }
 
 async function ensureStaffDoc() {
   if (!FB.uid) return;
   const doc = await _staffRef().get();
   if (!doc.exists) {
-    await _staffRef().set(
-      {
-        cashierName: "Alex Johnson",
-        terminal: "Terminal 01",
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-      },
-      { merge: true }
-    );
+    await _staffRef().set({
+      cashierName: "Alex Johnson",
+      terminal: "Terminal 01",
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
   }
+
   const d = (await _staffRef().get()).data() || {};
   SESSION.cashierName = String(d.cashierName || "Alex Johnson");
   SESSION.terminal = String(d.terminal || "Terminal 01");
@@ -179,7 +156,6 @@ async function ensureStaffDoc() {
 function startRealtimeSync() {
   stopRealtimeSync();
 
-  // Categories
   FB.unsub.cats = _catsRef().onSnapshot((snap) => {
     CATEGORIES = snap.docs.map(d => d.data()).filter(Boolean);
 
@@ -195,11 +171,9 @@ function startRealtimeSync() {
     renderProducts();
   });
 
-  // Products
   FB.unsub.prods = _prodsRef().onSnapshot((snap) => {
     PRODUCTS = snap.docs.map(d => d.data()).filter(Boolean);
 
-    // Drop cart items deleted in Firestore
     const ids = new Set(PRODUCTS.map(p => p.id));
     cart = cart.filter(l => ids.has(l.id));
 
@@ -209,7 +183,6 @@ function startRealtimeSync() {
     flashStatus("SYNCED");
   });
 
-  // Orders (today + yesterday)
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0, 0);
 
@@ -221,15 +194,14 @@ function startRealtimeSync() {
       ORDERS = snap.docs.map(d => {
         const x = d.data() || {};
         const tsISO = x.ts?.toDate ? x.ts.toDate().toISOString() : (x.tsISO || x.ts || "");
-        return { ...x, ts: tsISO };
+        return { ...x, ts: tsISO, __docId: d.id };
       });
 
-      if (document.getElementById("viewSales")?.classList.contains("active")) {
-        refreshSalesView();
-      }
+      syncOrdersToLocalCache(ORDERS);
+
+      if (document.getElementById("viewSales")?.classList.contains("active")) refreshSalesView();
     });
 
-  // Staff profile
   FB.unsub.staff = _staffRef().onSnapshot((doc) => {
     const d = doc.data() || {};
     if (d.cashierName) SESSION.cashierName = String(d.cashierName);
@@ -244,6 +216,42 @@ function stopRealtimeSync() {
   try { FB.unsub.orders?.(); } catch {}
   try { FB.unsub.staff?.(); } catch {}
   FB.unsub = { cats: null, prods: null, orders: null, staff: null };
+}
+
+/* ---------------------- ORDER CACHE / BROADCAST ---------------------- */
+function syncOrdersToLocalCache(orders){
+  try {
+    const existing = safeJSON(localStorage.getItem(LS_ORDERS), []);
+    const map = new Map();
+    [...orders, ...(Array.isArray(existing) ? existing : [])].forEach(o => {
+      const key = o.__docId || o.receiptId || `${o.ts}_${Math.random()}`;
+      map.set(key, o);
+    });
+    const merged = Array.from(map.values()).sort((a,b)=> new Date(b.ts||b.tsISO||0) - new Date(a.ts||a.tsISO||0));
+    localStorage.setItem(LS_ORDERS, JSON.stringify(merged.slice(0, 5000)));
+  } catch {}
+}
+
+function publishOrderToAdmin(order){
+  try {
+    const existing = safeJSON(localStorage.getItem(LS_ORDERS), []);
+    const next = [order, ...(Array.isArray(existing) ? existing.filter(o => o.receiptId !== order.receiptId) : [])]
+      .sort((a,b)=> new Date(b.ts||b.tsISO||0) - new Date(a.ts||a.tsISO||0))
+      .slice(0, 5000);
+    localStorage.setItem(LS_ORDERS, JSON.stringify(next));
+  } catch {}
+
+  try {
+    if ("BroadcastChannel" in window) {
+      const ch = new BroadcastChannel("madira_orders");
+      ch.postMessage(order);
+      ch.close();
+    }
+  } catch {}
+}
+
+function safeJSON(str, fallback){
+  try { return JSON.parse(str); } catch { return fallback; }
 }
 
 /* ---------------------- UI FEEDBACK ---------------------- */
@@ -271,37 +279,21 @@ async function hardLogout() {
 
   try {
     const killPrefixes = ["madira", "mb_", "MB_", "bs_", "BS_"];
-    const killExact = [
-      "madira_auth_v1",
-      "bs_auth_session",
-      "madira_cashier_session_v1",
-      "madira_orders_v1",
-      "user",
-      "role",
-      "token",
-      "session"
-    ];
+    const killExact = ["madira_auth_v1", "bs_auth_session", "madira_cashier_session_v1", "user", "role", "token", "session"];
 
-    killExact.forEach(k => {
-      localStorage.removeItem(k);
-      sessionStorage.removeItem(k);
-    });
+    killExact.forEach(k => { localStorage.removeItem(k); sessionStorage.removeItem(k); });
 
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const k = localStorage.key(i);
-      if (!k) continue;
-      if (killPrefixes.some(p => k.startsWith(p))) localStorage.removeItem(k);
+      if (k && killPrefixes.some(p => k.startsWith(p))) localStorage.removeItem(k);
     }
     for (let i = sessionStorage.length - 1; i >= 0; i--) {
       const k = sessionStorage.key(i);
-      if (!k) continue;
-      if (killPrefixes.some(p => k.startsWith(p))) sessionStorage.removeItem(k);
+      if (k && killPrefixes.some(p => k.startsWith(p))) sessionStorage.removeItem(k);
     }
   } catch {}
 
-  try {
-    if (window.firebase?.auth) await firebase.auth().signOut();
-  } catch {}
+  try { if (window.firebase?.auth) await firebase.auth().signOut(); } catch {}
 
   window.location.href = "login.html";
 }
@@ -321,7 +313,6 @@ function bindTopbar() {
     renderCart();
   });
 
-  /* ✅ COMPLETE SALE now directly completes checkout (no modal) */
   document.getElementById("btnCheckout")?.addEventListener("click", async () => {
     if (!cart.length) {
       alert("Scan items first.");
@@ -329,7 +320,8 @@ function bindTopbar() {
     }
     try {
       flashStatus("SAVING...");
-      await checkoutAndSave(DEFAULT_PAYMENT_METHOD);
+      const order = await checkoutAndSave(DEFAULT_PAYMENT_METHOD);
+      publishOrderToAdmin(order);
       cart = [];
       renderCart();
       refreshSalesView();
@@ -344,7 +336,6 @@ function bindTopbar() {
 
   document.getElementById("btnViewSales")?.addEventListener("click", () => setActiveTab("sales"));
 
-  // logout
   const btn = document.getElementById("logoutBtn");
   if (btn) {
     btn.setAttribute("onclick", "window.__HARD_LOGOUT__ && window.__HARD_LOGOUT__()");
@@ -365,7 +356,6 @@ function bindTopbar() {
 
   window.__HARD_LOGOUT__ = hardLogout;
 
-  /* ✅ Hide/disable checkout modal if it exists in HTML (so it won't interfere) */
   const overlay = document.getElementById("checkoutOverlay");
   if (overlay) {
     overlay.classList.add("hidden");
@@ -436,7 +426,7 @@ function initSidebarCategories() {
   });
 }
 
-/* ---------------------- ✅ ONE-LINE SUB + VARIANT FILTERS ---------------------- */
+/* ---------------------- FILTERS ---------------------- */
 function initUnifiedFilters() {
   const row = document.getElementById("subFilterRow");
   if (!row) return;
@@ -447,14 +437,8 @@ function initUnifiedFilters() {
   row.innerHTML = "";
 
   const catProducts = PRODUCTS.filter(p => p.category === activeCategory);
-
-  const subs = Array.from(new Set(
-    catProducts.map(p => String(p.sub || "").trim()).filter(Boolean)
-  ));
-
-  const variants = Array.from(new Set(
-    catProducts.map(p => String(p.size || "").trim()).filter(Boolean)
-  ));
+  const subs = Array.from(new Set(catProducts.map(p => String(p.sub || "").trim()).filter(Boolean)));
+  const variants = Array.from(new Set(catProducts.map(p => String(p.size || "").trim()).filter(Boolean)));
 
   if (activeSub !== "All" && !subs.includes(activeSub)) activeSub = "All";
   if (activeVariant !== "All" && !variants.includes(activeVariant)) activeVariant = "All";
@@ -466,21 +450,17 @@ function initUnifiedFilters() {
     renderProducts();
   }));
 
-  subs.forEach(s => {
-    row.appendChild(makePill(s, activeSub === s, () => {
-      activeSub = s;
-      initUnifiedFilters();
-      renderProducts();
-    }));
-  });
+  subs.forEach(s => row.appendChild(makePill(s, activeSub === s, () => {
+    activeSub = s;
+    initUnifiedFilters();
+    renderProducts();
+  })));
 
-  variants.forEach(v => {
-    row.appendChild(makePill(v, activeVariant === v, () => {
-      activeVariant = v;
-      initUnifiedFilters();
-      renderProducts();
-    }));
-  });
+  variants.forEach(v => row.appendChild(makePill(v, activeVariant === v, () => {
+    activeVariant = v;
+    initUnifiedFilters();
+    renderProducts();
+  })));
 }
 
 function makePill(text, isActive, onClick) {
@@ -501,7 +481,8 @@ function filteredProducts() {
 
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      const hay = (String(p.name || "") + " " + String(p.barcode || "")).toLowerCase();
+      const aliases = Array.isArray(p.barcodes) ? p.barcodes.join(" ") : "";
+      const hay = `${p.name || ""} ${p.barcode || ""} ${aliases}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -548,7 +529,7 @@ function addToCart(pid, qty = 1) {
       id: p.id,
       name: p.name,
       price: Number(p.price || 0),
-      qty: qty,
+      qty,
       barcode: p.barcode,
       category: p.category || "",
       sub: p.sub || "",
@@ -624,23 +605,29 @@ function renderCart() {
   if (meta) meta.textContent = cart.length ? `Items: ${count}` : "#—";
 }
 
-/* =========================================================
-   ✅ BARCODE SCANNER AUTO-ADD (keyboard wedge scanners)
-   - Most barcode scanners type digits fast + press Enter
-   - This captures fast keystream even if focus isn't on input
-========================================================= */
+/* ---------------------- BARCODE SCANNER ---------------------- */
+function findProductByAnyBarcode(code){
+  const c = String(code || "").trim();
+  if (!c) return null;
+
+  return PRODUCTS.find(p => {
+    const primary = String(p.barcode || "").trim();
+    if (primary && primary === c) return true;
+
+    const arr = Array.isArray(p.barcodes) ? p.barcodes.map(x => String(x || "").trim()) : [];
+    return arr.includes(c);
+  }) || null;
+}
+
 function bindBarcodeScanner() {
   let buf = "";
   let timer = null;
-  const TIMEOUT_MS = 50;      // scanner is fast; human typing is slower
+  const TIMEOUT_MS = 50;
   const MIN_LEN = 4;
 
   window.addEventListener("keydown", (e) => {
-    // ignore if ctrl/alt/meta combos
     if (e.ctrlKey || e.altKey || e.metaKey) return;
 
-    // If user is typing in an input/textarea, still allow scanner
-    // but ignore normal letters except digits (most barcodes are numeric)
     const k = e.key;
 
     if (k === "Enter") {
@@ -650,14 +637,11 @@ function bindBarcodeScanner() {
         if (timer) clearTimeout(timer);
         timer = null;
 
-        const found = PRODUCTS.find(p => String(p.barcode || "").trim() === String(code).trim());
+        const found = findProductByAnyBarcode(code);
         if (found) {
           addToCart(found.id, 1);
           flashStatus(`SCANNED: ${code}`);
-          // keep on terminal
-          if (!document.getElementById("viewTerminal")?.classList.contains("active")) {
-            setActiveTab("terminal");
-          }
+          if (!document.getElementById("viewTerminal")?.classList.contains("active")) setActiveTab("terminal");
         } else {
           flashStatus(`UNKNOWN: ${code}`, true);
         }
@@ -668,25 +652,17 @@ function bindBarcodeScanner() {
       return;
     }
 
-    // accept only printable characters; prefer digits
     if (k.length === 1) {
-      // reset timer
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => { buf = ""; }, TIMEOUT_MS);
 
-      // If you want to accept alphabets too, remove this check
-      // Most barcodes are numeric, so this avoids capturing human typing
-      if (/^[0-9]$/.test(k)) {
-        buf += k;
-      } else {
-        // If barcode contains letters, allow them too by uncommenting:
-        // buf += k;
-      }
+      // Supports numeric and alpha-numeric barcodes.
+      if (/^[0-9A-Za-z]$/.test(k)) buf += k;
     }
   }, true);
 }
 
-/* ---------------------- CHECKOUT: Firestore transaction ---------------------- */
+/* ---------------------- CHECKOUT ---------------------- */
 async function checkoutAndSave(method) {
   if (!FB.enabled) throw new Error("Firebase not available");
 
@@ -733,7 +709,7 @@ async function checkoutAndSave(method) {
       seq,
       receiptId,
       tsISO,
-      ts: firebase.firestore.Timestamp.fromDate(now),
+      ts: firebase.firestore.FieldValue.serverTimestamp(),
       timeLabel: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       items: cart.map(l => ({
         id: l.id,
@@ -751,31 +727,27 @@ async function checkoutAndSave(method) {
       terminal: SESSION.terminal,
       cashier: SESSION.cashierName,
       subtotal: round2(subtotal),
-      tax: round2(tax),
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      tax: round2(tax)
     };
 
     tx.set(_ordersRef().doc(orderDocId), order, { merge: true });
-    return { ...order, ts: tsISO };
+    return { ...order, ts: tsISO, __docId: orderDocId };
   });
 
   ORDERS.unshift(result);
-  cacheOrderLocally(result);
+  syncOrdersToLocalCache([result]);
   return result;
 }
 
 /* ---------------------- SALES VIEW ---------------------- */
 function refreshSalesView() {
   const today = new Date();
-  const todayKey = localDateKey(today);
-  const todays = ORDERS.filter(o => localDateKey(o.ts || o.tsISO) === todayKey);
+  const todayKey = today.toISOString().slice(0, 10);
+  const todays = ORDERS.filter(o => (o.ts || "").slice(0, 10) === todayKey);
 
   const salesDateEl = document.getElementById("salesDate");
   if (salesDateEl) {
-    salesDateEl.textContent = today.toLocaleDateString("en-IN", {
-      weekday: "long", year: "numeric", month: "short", day: "numeric"
-    });
+    salesDateEl.textContent = today.toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "short", day: "numeric" });
   }
 
   const totalSales = todays.reduce((s, o) => s + (o.amount || 0), 0);
@@ -788,9 +760,7 @@ function refreshSalesView() {
 
   const units = new Map();
   for (const o of todays) {
-    for (const it of (o.items || [])) {
-      units.set(it.name, (units.get(it.name) || 0) + it.qty);
-    }
+    for (const it of (o.items || [])) units.set(it.name, (units.get(it.name) || 0) + it.qty);
   }
 
   let topName = "—", topUnits = 0;
@@ -816,8 +786,7 @@ function renderSalesTable(todays) {
   body.innerHTML = "";
 
   list.forEach(o => {
-    const itemsText =
-      (o.items || []).slice(0, 2).map(i => `${i.qty}x ${i.name}`).join(", ")
+    const itemsText = (o.items || []).slice(0, 2).map(i => `${i.qty}x ${i.name}`).join(", ")
       + ((o.items || []).length > 2 ? `, +${(o.items || []).length - 2} more` : "");
 
     const tr = document.createElement("div");
@@ -843,7 +812,7 @@ function renderSalesTable(todays) {
 document.getElementById("salesSearch")?.addEventListener("input", refreshSalesView);
 
 function renderSalesByHour(todays) {
-  const bins = new Array(12).fill(0); // 8AM-8PM
+  const bins = new Array(12).fill(0);
   for (const o of todays) {
     const d = new Date(o.ts);
     const h = d.getHours();
@@ -889,7 +858,7 @@ function statusBadge(s) {
   return `<span class="badge red">${escapeHtml(s)}</span>`;
 }
 
-/* ---------------------- SHIFT (demo) ---------------------- */
+/* ---------------------- SHIFT / CASHIER UI ---------------------- */
 function setShiftProgress(ratio) {
   const fill = document.getElementById("shiftFill");
   const meta = document.getElementById("shiftMeta");
@@ -897,7 +866,6 @@ function setShiftProgress(ratio) {
   if (meta) meta.textContent = "8h 12m remaining";
 }
 
-/* ---------------------- CASHIER UI ---------------------- */
 function hydrateCashierUI() {
   const cn = document.getElementById("cashierName");
   const tn = document.getElementById("terminalName");
@@ -923,51 +891,7 @@ function money(n) {
   return v.toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 });
 }
 
-function round2(n) {
-  return Math.round((Number(n) || 0) * 100) / 100;
-}
-
-function localDateKey(value) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function cacheOrderLocally(order) {
-  try {
-    const clean = {
-      seq: order.seq,
-      receiptId: order.receiptId,
-      tsISO: order.tsISO || order.ts || new Date().toISOString(),
-      ts: order.tsISO || order.ts || new Date().toISOString(),
-      timeLabel: order.timeLabel || "",
-      items: Array.isArray(order.items) ? order.items : [],
-      method: order.method || DEFAULT_PAYMENT_METHOD,
-      amount: Number(order.amount || 0),
-      status: order.status || "COMPLETED",
-      terminal: order.terminal || SESSION.terminal,
-      cashier: order.cashier || SESSION.cashierName,
-      subtotal: Number(order.subtotal || 0),
-      tax: Number(order.tax || 0)
-    };
-
-    const list = JSON.parse(localStorage.getItem(LS_ORDERS) || "[]");
-    const next = Array.isArray(list)
-      ? list.filter(o => o.receiptId !== clean.receiptId)
-      : [];
-    next.unshift(clean);
-    localStorage.setItem(LS_ORDERS, JSON.stringify(next.slice(0, 5000)));
-
-    if ("BroadcastChannel" in window) {
-      const channel = new BroadcastChannel("madira_orders");
-      channel.postMessage(clean);
-      channel.close();
-    }
-  } catch {}
-}
+function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
 function initials(name) {
   return String(name || "")

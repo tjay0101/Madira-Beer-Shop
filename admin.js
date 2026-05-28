@@ -249,6 +249,11 @@ function fbStartRealtimeSync(){
 
   FB.unsub.cats = _catsRef().onSnapshot((snap)=>{
     const cats = snap.docs.map(d => d.data()).filter(Boolean);
+
+    // ✅ Do not wipe local categories if Firestore returns empty temporarily
+    const existing = safeJSON(localStorage.getItem(LS_CATEGORIES), []);
+    if (snap.empty && Array.isArray(existing) && existing.length) return;
+
     localStorage.setItem(LS_CATEGORIES, JSON.stringify(cats));
     if (state.route === "inventory") renderInventory();
     if (state.route === "addProduct") renderAddProductPage();
@@ -257,6 +262,11 @@ function fbStartRealtimeSync(){
 
   FB.unsub.prods = _prodsRef().onSnapshot((snap)=>{
     const prods = snap.docs.map(d => d.data()).filter(Boolean);
+
+    // ✅ Do not wipe local products if Firestore returns empty temporarily
+    const existing = safeJSON(localStorage.getItem(LS_PRODUCTS), []);
+    if (snap.empty && Array.isArray(existing) && existing.length) return;
+
     localStorage.setItem(LS_PRODUCTS, JSON.stringify(prods));
     if (state.route === "inventory") renderInventory();
     if (state.route === "dashboard") renderDashboard();
@@ -275,6 +285,11 @@ function fbStartRealtimeSync(){
         const x = d.data() || {};
         return normalizeOrder({ ...x, __docId: d.id });
       }));
+
+      // ✅ Key fix: do not overwrite valid local orders with an empty snapshot
+      const existing = safeJSON(localStorage.getItem(LS_ORDERS), []);
+      if (snap.empty && Array.isArray(existing) && existing.length) return;
+
       localStorage.setItem(LS_ORDERS, JSON.stringify(orders));
       if (state.route === "orders") renderOrders();
       if (state.route === "reports") renderReports();
@@ -293,6 +308,11 @@ function fbStartRealtimeSync(){
         const tsISO = x.ts?.toDate ? x.ts.toDate().toISOString() : (x.tsISO || x.ts || "");
         return { ...x, ts: tsISO, __docId: d.id };
       });
+
+      // ✅ Do not wipe local purchases if Firestore returns empty temporarily
+      const existing = safeJSON(localStorage.getItem(LS_PURCHASES), []);
+      if (snap.empty && Array.isArray(existing) && existing.length) return;
+
       localStorage.setItem(LS_PURCHASES, JSON.stringify(list));
       if (state.route === "purchases") renderPurchases();
     });
@@ -398,7 +418,13 @@ document.addEventListener("DOMContentLoaded", () => boot().catch(console.error))
 
 async function boot(){
   seedIfMissing();
+
+  // Start compat realtime first.
   await fbInitAndSync();
+
+  // ✅ Important: Pull once from firebase-init.js module too.
+  // This restores Orders/Sales history even if old data exists in the older stores/... path.
+  await tryModulePullAllToLocalStorage();
 
   bindSidebarNav();
   bindTopbarSearch();
@@ -417,6 +443,16 @@ async function boot(){
 
   hydrateAdminIdentity();
   navigate("dashboard");
+}
+
+async function tryModulePullAllToLocalStorage(){
+  if (!window.fb || typeof window.fb.pullAllToLocalStorage !== "function") return;
+  try{
+    const result = await window.fb.pullAllToLocalStorage();
+    console.log("✅ Module pullAllToLocalStorage:", result);
+  } catch(e){
+    console.warn("pullAllToLocalStorage failed:", e);
+  }
 }
 
 /* =========================================================

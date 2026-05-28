@@ -1,8 +1,7 @@
 // firebase-init.js ✅ (MODULE) — FULL COPY-PASTE
-// Loads Modular Firebase SDK safely (no duplicate init)
-// Exposes window.fb helpers (optional)
-// Uses SAME Firestore structure as cashier/admin compat code:
-// shops/{SHOP_ID}/(categories,products,orders,purchases)
+// ✅ Reads from NEW path: shops/{SHOP_ID}/...
+// ✅ Fallback reads from OLD path: stores/{LEGACY_STORE_ID}/...
+// ✅ Exposes window.fb.pullAllToLocalStorage() used by admin.js
 
 import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-app.js";
 
@@ -12,7 +11,6 @@ import {
   doc,
   setDoc,
   getDocs,
-  getDoc,
   deleteDoc,
   query,
   where,
@@ -28,7 +26,7 @@ import {
   onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-auth.js";
 
-/* ✅ Your Firebase config */
+/* ✅ Firebase config */
 const firebaseConfig = {
   apiKey: "AIzaSyA1j5o_xomVeJqIe-mc3cV20kWk780UCvM",
   authDomain: "madira-beer.firebaseapp.com",
@@ -39,41 +37,38 @@ const firebaseConfig = {
   measurementId: "G-DN6WLYYWLT"
 };
 
-/* ✅ Must match your actual shop id used in cashier/admin */
+/* ✅ NEW structure (current cashier/admin compat code) */
 const SHOP_ID = "madira";
 
-/* ✅ LocalStorage keys used across app */
+/* ✅ OLD structure (earlier firebase-init.js) — kept so old history still appears */
+const LEGACY_STORE_ID = "madira_store_1";
+
+/* ✅ LocalStorage keys */
 const LS_PRODUCTS   = "madira_products_v1";
 const LS_CATEGORIES = "madira_categories_v1";
 const LS_ORDERS     = "madira_orders_v1";
 const LS_PURCHASES  = "madira_purchases_v1";
 
-/* ------------------ init (safe) ------------------ */
+/* ------------------ init ------------------ */
 const app  = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const db   = getFirestore(app);
 const auth = getAuth(app);
 
-/* ------------------ firestore paths ------------------ */
-const shopDoc = () => doc(db, "shops", SHOP_ID);
-const colCats      = () => collection(db, "shops", SHOP_ID, "categories");
-const colProds     = () => collection(db, "shops", SHOP_ID, "products");
-const colOrders    = () => collection(db, "shops", SHOP_ID, "orders");
-const colPurchases = () => collection(db, "shops", SHOP_ID, "purchases");
+/* ------------------ paths (NEW) ------------------ */
+const colCatsNew      = () => collection(db, "shops", SHOP_ID, "categories");
+const colProdsNew     = () => collection(db, "shops", SHOP_ID, "products");
+const colOrdersNew    = () => collection(db, "shops", SHOP_ID, "orders");
+const colPurchNew     = () => collection(db, "shops", SHOP_ID, "purchases");
+
+/* ------------------ paths (OLD fallback) ------------------ */
+const colCatsOld      = () => collection(db, "stores", LEGACY_STORE_ID, "categories");
+const colProdsOld     = () => collection(db, "stores", LEGACY_STORE_ID, "products");
+const colOrdersOld    = () => collection(db, "stores", LEGACY_STORE_ID, "orders");
+const colPurchOld     = () => collection(db, "stores", LEGACY_STORE_ID, "purchases");
 
 /* ------------------ helpers ------------------ */
 function startOfDay(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0,0,0,0); }
 function endOfDay(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23,59,59,999); }
-
-function safeJSON(str, fallback){ try { return JSON.parse(str); } catch { return fallback; } }
-
-function toDocId(input){
-  return String(input ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 80);
-}
 
 function toCSV(rows){
   if (!rows.length) return "";
@@ -96,7 +91,7 @@ function downloadText(text, filename, mime){
   URL.revokeObjectURL(url);
 }
 
-/* ------------------ AUTH (anon) ------------------ */
+/* ------------------ AUTH ------------------ */
 let _authReady = null;
 
 async function ensureAnonAuth(){
@@ -109,7 +104,6 @@ async function ensureAnonAuth(){
     });
 
     if (auth.currentUser) return auth.currentUser;
-
     await signInAnonymously(auth);
     return auth.currentUser;
   })();
@@ -117,162 +111,91 @@ async function ensureAnonAuth(){
   return _authReady;
 }
 
-/* ------------------ Categories ------------------ */
-async function upsertCategory(cat){
-  await ensureAnonAuth();
-  const name = String(cat?.name || "").trim();
-  if (!name) throw new Error("Category name missing");
-
-  const id = toDocId(name);
-  await setDoc(
-    doc(colCats(), id),
-    { name, icon: cat.icon || "•", updatedAt: serverTimestamp() },
-    { merge:true }
-  );
-}
-
-async function deleteCategory(name){
-  await ensureAnonAuth();
-  const id = toDocId(name);
-  if (!id) return;
-  await deleteDoc(doc(colCats(), id));
-}
-
-/* ------------------ Products ------------------ */
-async function upsertProduct(product){
-  await ensureAnonAuth();
-  const rawId = String(product?.id || "").trim();
-  if (!rawId) throw new Error("Product id missing");
-
-  await setDoc(
-    doc(colProds(), rawId),
-    { ...product, id: rawId, updatedAt: serverTimestamp() },
-    { merge:true }
-  );
-}
-
-async function deleteProduct(id){
-  await ensureAnonAuth();
-  const pid = String(id || "").trim();
-  if (!pid) return;
-  await deleteDoc(doc(colProds(), pid));
-}
-
-/* ------------------ Orders ------------------ */
-async function saveOrder(docIdOrReceiptId, order){
-  await ensureAnonAuth();
-  const id = String(docIdOrReceiptId || order?.receiptId || "").trim();
-  if (!id) throw new Error("Order id missing");
-
-  const tsISO = order?.tsISO || order?.ts || new Date().toISOString();
-  const ts = Timestamp.fromDate(new Date(tsISO));
-
-  await setDoc(
-    doc(colOrders(), id),
-    { ...order, receiptId: order?.receiptId || id, tsISO, ts, updatedAt: serverTimestamp() },
-    { merge:true }
-  );
-}
-
-async function deleteOrder(docId){
-  await ensureAnonAuth();
-  const id = String(docId || "").trim();
-  if (!id) return;
-  await deleteDoc(doc(colOrders(), id));
-}
-
-/* ------------------ Purchases (NEW) ------------------ */
-async function savePurchase(docId, purchase){
-  await ensureAnonAuth();
-  const id = docId ? String(docId).trim() : null;
-
-  const tsISO = purchase?.tsISO || purchase?.ts || new Date().toISOString();
-  const ts = Timestamp.fromDate(new Date(tsISO));
-
-  if (id){
-    await setDoc(
-      doc(colPurchases(), id),
-      { ...purchase, tsISO, ts, updatedAt: serverTimestamp() },
-      { merge:true }
-    );
-    return id;
-  } else {
-    const auto = doc(colPurchases());
-    await setDoc(
-      auto,
-      { ...purchase, tsISO, ts, createdAt: serverTimestamp(), updatedAt: serverTimestamp() },
-      { merge:true }
-    );
-    return auto.id;
-  }
-}
-
-async function deletePurchase(docId){
-  await ensureAnonAuth();
-  const id = String(docId || "").trim();
-  if (!id) return;
-  await deleteDoc(doc(colPurchases(), id));
-}
-
-/* ------------------ reads ------------------ */
+/* ------------------ generic fetch helpers ------------------ */
 async function fetchCategories(){
   await ensureAnonAuth();
-  const snap = await getDocs(colCats());
-  return snap.docs.map(d => d.data()).filter(Boolean);
+
+  const snapNew = await getDocs(colCatsNew());
+  const arrNew = snapNew.docs.map(d => {
+    const x = d.data() || {};
+    return { name: x.name || d.id, icon: x.icon || "•" };
+  });
+  if (arrNew.length) return arrNew;
+
+  try{
+    const snapOld = await getDocs(colCatsOld());
+    return snapOld.docs.map(d => {
+      const x = d.data() || {};
+      return { name: x.name || d.id, icon: x.icon || "•" };
+    });
+  } catch {
+    return [];
+  }
 }
 
 async function fetchProducts(){
   await ensureAnonAuth();
-  const snap = await getDocs(colProds());
-  return snap.docs.map(d => d.data()).filter(Boolean);
+
+  const snapNew = await getDocs(colProdsNew());
+  const arrNew = snapNew.docs.map(d => {
+    const x = d.data() || {};
+    return { ...x, id: x.id || d.id };
+  });
+  if (arrNew.length) return arrNew;
+
+  try{
+    const snapOld = await getDocs(colProdsOld());
+    return snapOld.docs.map(d => {
+      const x = d.data() || {};
+      return { ...x, id: x.id || d.id };
+    });
+  } catch {
+    return [];
+  }
+}
+
+function normalizeDocWithTs(d){
+  const data = d.data() || {};
+  const ts = data.ts?.toDate ? data.ts.toDate() : null;
+  return { ...data, ts: ts ? ts.toISOString() : (data.tsISO || data.ts || ""), __docId: d.id };
+}
+
+async function _fetchByDate(colRef, fromDate, toDate){
+  let qRef;
+  if (fromDate && toDate){
+    qRef = query(
+      colRef(),
+      where("ts", ">=", Timestamp.fromDate(fromDate)),
+      where("ts", "<=", Timestamp.fromDate(toDate)),
+      orderBy("ts", "desc"),
+      limit(5000)
+    );
+  } else {
+    qRef = query(colRef(), orderBy("ts", "desc"), limit(5000));
+  }
+
+  const snap = await getDocs(qRef);
+  return snap.docs.map(normalizeDocWithTs);
 }
 
 async function fetchOrdersByDate(fromDate, toDate){
   await ensureAnonAuth();
 
-  let qRef;
-  if (fromDate && toDate){
-    qRef = query(
-      colOrders(),
-      where("ts", ">=", Timestamp.fromDate(fromDate)),
-      where("ts", "<=", Timestamp.fromDate(toDate)),
-      orderBy("ts", "desc"),
-      limit(5000)
-    );
-  } else {
-    qRef = query(colOrders(), orderBy("ts", "desc"), limit(5000));
-  }
+  const listNew = await _fetchByDate(colOrdersNew, fromDate, toDate);
+  if (listNew.length) return listNew;
 
-  const snap = await getDocs(qRef);
-  return snap.docs.map(d => {
-    const data = d.data() || {};
-    const ts = data.ts?.toDate ? data.ts.toDate() : null;
-    return { ...data, ts: ts ? ts.toISOString() : (data.tsISO || ""), __docId: d.id };
-  });
+  try { return await _fetchByDate(colOrdersOld, fromDate, toDate); }
+  catch { return []; }
 }
 
 async function fetchPurchasesByDate(fromDate, toDate){
   await ensureAnonAuth();
 
-  let qRef;
-  if (fromDate && toDate){
-    qRef = query(
-      colPurchases(),
-      where("ts", ">=", Timestamp.fromDate(fromDate)),
-      where("ts", "<=", Timestamp.fromDate(toDate)),
-      orderBy("ts", "desc"),
-      limit(5000)
-    );
-  } else {
-    qRef = query(colPurchases(), orderBy("ts", "desc"), limit(5000));
-  }
+  const listNew = await _fetchByDate(colPurchNew, fromDate, toDate);
+  if (listNew.length) return listNew;
 
-  const snap = await getDocs(qRef);
-  return snap.docs.map(d => {
-    const data = d.data() || {};
-    const ts = data.ts?.toDate ? data.ts.toDate() : null;
-    return { ...data, ts: ts ? ts.toISOString() : (data.tsISO || ""), __docId: d.id };
-  });
+  try { return await _fetchByDate(colPurchOld, fromDate, toDate); }
+  catch { return []; }
 }
 
 /* ------------------ sync to localStorage ------------------ */
@@ -284,17 +207,48 @@ async function pullAllToLocalStorage(){
     fetchPurchasesByDate(null, null)
   ]);
 
-  localStorage.setItem(LS_CATEGORIES, JSON.stringify(cats));
-  localStorage.setItem(LS_PRODUCTS, JSON.stringify(prods));
+  // Only write non-empty categories/products so defaults are not wiped accidentally.
+  if (cats.length) localStorage.setItem(LS_CATEGORIES, JSON.stringify(cats));
+  if (prods.length) localStorage.setItem(LS_PRODUCTS, JSON.stringify(prods));
+
+  // Orders/purchases can validly be empty, so write them.
   localStorage.setItem(LS_ORDERS, JSON.stringify(orders));
   localStorage.setItem(LS_PURCHASES, JSON.stringify(purchases));
+
+  return { cats: cats.length, prods: prods.length, orders: orders.length, purchases: purchases.length };
 }
 
-/* ------------------ export CSV helpers ------------------ */
+/* ------------------ export helpers ------------------ */
+async function downloadOrdersCSV(fromISO, toISO){
+  const from = fromISO ? startOfDay(new Date(fromISO)) : null;
+  const to   = toISO ? endOfDay(new Date(toISO)) : null;
+  const orders = await fetchOrdersByDate(from, to);
+
+  const flat = [];
+  orders.forEach(o=>{
+    (o.items||[]).forEach(it=>{
+      flat.push({
+        receiptId: o.receiptId || "",
+        ts: o.ts || "",
+        cashier: o.cashier || "",
+        terminal: o.terminal || "",
+        method: o.method || "",
+        status: o.status || "",
+        itemName: it.name || "",
+        qty: Number(it.qty||0),
+        unitPrice: Number(it.price||0),
+        lineTotal: Number(it.price||0) * Number(it.qty||0),
+        orderTotal: Number(o.amount||0)
+      });
+    });
+  });
+
+  downloadText(toCSV(flat), `madira_orders_${fromISO || "ALL"}_to_${toISO || "ALL"}.csv`, "text/csv");
+}
+
 async function downloadPurchasesCSV(fromISO, toISO){
   const from = fromISO ? startOfDay(new Date(fromISO)) : null;
   const to   = toISO ? endOfDay(new Date(toISO)) : null;
-
   const purchases = await fetchPurchasesByDate(from, to);
 
   const flat = [];
@@ -316,38 +270,21 @@ async function downloadPurchasesCSV(fromISO, toISO){
     });
   });
 
-  const csv = toCSV(flat);
-  const labelFrom = fromISO || "ALL";
-  const labelTo = toISO || "ALL";
-  downloadText(csv, `madira_purchases_${labelFrom}_to_${labelTo}.csv`, "text/csv");
+  downloadText(toCSV(flat), `madira_purchases_${fromISO || "ALL"}_to_${toISO || "ALL"}.csv`, "text/csv");
 }
 
-/* ✅ Expose to your existing scripts (optional usage) */
+/* ✅ Expose */
 window.fb = {
-  app,
   db,
   auth,
-  shopDoc,
   ensureAnonAuth,
-
-  upsertCategory,
-  deleteCategory,
-  upsertProduct,
-  deleteProduct,
-
-  saveOrder,
-  deleteOrder,
-
-  savePurchase,
-  deletePurchase,
-
   fetchCategories,
   fetchProducts,
   fetchOrdersByDate,
   fetchPurchasesByDate,
-
   pullAllToLocalStorage,
+  downloadOrdersCSV,
   downloadPurchasesCSV
 };
 
-console.log("✅ Firebase-init ready:", firebaseConfig.projectId, "SHOP_ID:", SHOP_ID);
+console.log("✅ firebase-init ready | NEW shops:", SHOP_ID, "| OLD stores:", LEGACY_STORE_ID);
