@@ -1,21 +1,16 @@
 /* =========================================================
-   cashier.js (FIREBASE SOURCE OF TRUTH) — FULL COPY-PASTE
-   ✅ Firestore realtime for Products/Categories/Orders/Staff
+   MADIRA CASHIER.JS — FINAL
+   ✅ Saves orders directly to Firebase:
+      shops/madira/orders
+   ✅ Admin can read instantly from Firebase on hosted site
+   ✅ Supports linked barcodes: product.barcode + product.barcodes[]
    ✅ Complete Sale directly saves order
-   ✅ Barcode scanner supports:
-      - product.barcode (primary)
-      - product.barcodes[] (linked/new barcodes from Admin Purchases)
-   ✅ Broadcasts completed orders to Admin page + localStorage cache
    ========================================================= */
 
 const TAX_RATE = 0.00;
 const SHOP_NAME = "Madira Beer Shop";
 const DEFAULT_PAYMENT_METHOD = "CARD";
 
-/* ---------------------- LOCAL STORAGE KEYS ---------------------- */
-const LS_ORDERS = "madira_orders_v1";
-
-/* ---------------------- FIREBASE CONFIG ---------------------- */
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyA1j5o_xomVeJqIe-mc3cV20kWk780UCvM",
   authDomain: "madira-beer.firebaseapp.com",
@@ -37,7 +32,6 @@ let FB = {
   unsub: { cats: null, prods: null, orders: null, staff: null }
 };
 
-/* ---------------------- DATA ---------------------- */
 let PRODUCTS = [];
 let CATEGORIES = [];
 let ORDERS = [];
@@ -50,35 +44,36 @@ let searchQuery = "";
 let cart = [];
 let SESSION = { cashierName: "Cashier", terminal: "Terminal 01" };
 
-/* ---------------------- BOOT ---------------------- */
 document.addEventListener("DOMContentLoaded", async () => {
-  document.getElementById("btnSelectDate")?.remove();
+  try {
+    await fbInitOrFail();
 
-  await fbInitOrFail();
+    bindTopbar();
+    bindTabs();
+    bindBarcodeScanner();
 
-  bindTopbar();
-  bindTabs();
-  bindBarcodeScanner();
+    activeCategory = CATEGORIES[0]?.name || "Beers";
+    activeSub = "All";
+    activeVariant = "All";
 
-  activeCategory = CATEGORIES[0]?.name || "Beers";
-  activeSub = "All";
-  activeVariant = "All";
+    initSidebarCategories();
+    initUnifiedFilters();
+    renderProducts();
+    renderCart();
+    refreshSalesView();
 
-  initSidebarCategories();
-  initUnifiedFilters();
-  renderProducts();
-  renderCart();
-  refreshSalesView();
-
-  setShiftProgress(0.62);
-  setActiveTab("terminal");
+    setShiftProgress(0.62);
+    setActiveTab("terminal");
+  } catch (e) {
+    console.error("Cashier boot failed:", e);
+  }
 });
 
-/* ---------------------- FIREBASE LOADER ---------------------- */
 function _loadScriptOnce(src) {
   return new Promise((resolve, reject) => {
     const exists = [...document.scripts].some(s => s.src === src);
     if (exists) return resolve();
+
     const s = document.createElement("script");
     s.src = src;
     s.async = true;
@@ -90,69 +85,89 @@ function _loadScriptOnce(src) {
 
 async function ensureFirebaseCompatLoaded() {
   if (window.firebase && firebase.apps) return;
+
   const v = FIREBASE_CDN_VERSION;
   await _loadScriptOnce(`https://www.gstatic.com/firebasejs/${v}/firebase-app-compat.js`);
   await _loadScriptOnce(`https://www.gstatic.com/firebasejs/${v}/firebase-auth-compat.js`);
   await _loadScriptOnce(`https://www.gstatic.com/firebasejs/${v}/firebase-firestore-compat.js`);
 }
 
-/* ---------------------- FIRESTORE REFS ---------------------- */
-function _shopRef() { return FB.db.collection("shops").doc(FIREBASE_SHOP_ID); }
-function _catsRef() { return _shopRef().collection("categories"); }
-function _prodsRef() { return _shopRef().collection("products"); }
-function _ordersRef() { return _shopRef().collection("orders"); }
-function _metaRef() { return _shopRef().collection("meta").doc("counters"); }
-function _staffRef() { return _shopRef().collection("staff").doc(FB.uid || "unknown"); }
+function _shopRef() {
+  return FB.db.collection("shops").doc(FIREBASE_SHOP_ID);
+}
 
-/* ---------------------- FIREBASE INIT ---------------------- */
+function _catsRef() {
+  return _shopRef().collection("categories");
+}
+
+function _prodsRef() {
+  return _shopRef().collection("products");
+}
+
+function _ordersRef() {
+  return _shopRef().collection("orders");
+}
+
+function _metaRef() {
+  return _shopRef().collection("meta").doc("counters");
+}
+
+function _staffRef() {
+  return _shopRef().collection("staff").doc(FB.uid || "unknown");
+}
+
 async function fbInitOrFail() {
-  try {
-    await ensureFirebaseCompatLoaded();
-    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+  await ensureFirebaseCompatLoaded();
 
-    FB.auth = firebase.auth();
-    FB.db = firebase.firestore();
+  if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
 
-    if (!FB.auth.currentUser) await FB.auth.signInAnonymously();
-    FB.uid = FB.auth.currentUser?.uid || null;
-    FB.enabled = true;
+  FB.auth = firebase.auth();
+  FB.db = firebase.firestore();
 
-    await ensureCountersDoc();
-    await ensureStaffDoc();
-    startRealtimeSync();
-
-    return true;
-  } catch (e) {
-    console.error("Firebase init failed:", e);
-    FB.enabled = false;
-    alert("Firebase connection failed. Cashier cannot run without Firebase.");
-    throw e;
+  if (!FB.auth.currentUser) {
+    await FB.auth.signInAnonymously();
   }
+
+  FB.uid = FB.auth.currentUser?.uid || null;
+  FB.enabled = true;
+
+  await ensureCountersDoc();
+  await ensureStaffDoc();
+  startRealtimeSync();
+
+  return true;
 }
 
 async function ensureCountersDoc() {
   const doc = await _metaRef().get();
-  if (!doc.exists) await _metaRef().set({ posSeq: 1020 }, { merge: true });
+  if (!doc.exists) {
+    await _metaRef().set({ posSeq: 1020 }, { merge: true });
+  }
 }
 
 async function ensureStaffDoc() {
   if (!FB.uid) return;
+
   const doc = await _staffRef().get();
+
   if (!doc.exists) {
-    await _staffRef().set({
-      cashierName: "Alex Johnson",
-      terminal: "Terminal 01",
-      createdAt: firebase.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
+    await _staffRef().set(
+      {
+        cashierName: "Alex Johnson",
+        terminal: "Terminal 01",
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    );
   }
 
   const d = (await _staffRef().get()).data() || {};
   SESSION.cashierName = String(d.cashierName || "Alex Johnson");
   SESSION.terminal = String(d.terminal || "Terminal 01");
+
   hydrateCashierUI();
 }
 
-/* ---------------------- REALTIME SYNC ---------------------- */
 function startRealtimeSync() {
   stopRealtimeSync();
 
@@ -169,7 +184,7 @@ function startRealtimeSync() {
     initSidebarCategories();
     initUnifiedFilters();
     renderProducts();
-  });
+  }, err => console.error("Cashier categories sync error:", err));
 
   FB.unsub.prods = _prodsRef().onSnapshot((snap) => {
     PRODUCTS = snap.docs.map(d => d.data()).filter(Boolean);
@@ -181,33 +196,42 @@ function startRealtimeSync() {
     renderProducts();
     renderCart();
     flashStatus("SYNCED");
-  });
-
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0, 0);
+  }, err => console.error("Cashier products sync error:", err));
 
   FB.unsub.orders = _ordersRef()
-    .where("ts", ">=", firebase.firestore.Timestamp.fromDate(start))
     .orderBy("ts", "desc")
     .limit(1500)
     .onSnapshot((snap) => {
       ORDERS = snap.docs.map(d => {
         const x = d.data() || {};
         const tsISO = x.ts?.toDate ? x.ts.toDate().toISOString() : (x.tsISO || x.ts || "");
-        return { ...x, ts: tsISO, __docId: d.id };
+        return {
+          ...x,
+          ts: tsISO,
+          tsISO,
+          __docId: d.id,
+          receiptId: x.receiptId || d.id,
+          amount: Number(x.amount || 0),
+          items: Array.isArray(x.items) ? x.items : [],
+          status: x.status || "COMPLETED"
+        };
       });
 
       syncOrdersToLocalCache(ORDERS);
 
-      if (document.getElementById("viewSales")?.classList.contains("active")) refreshSalesView();
-    });
+      if (document.getElementById("viewSales")?.classList.contains("active")) {
+        refreshSalesView();
+      }
+    }, err => console.error("Cashier orders sync error:", err));
 
   FB.unsub.staff = _staffRef().onSnapshot((doc) => {
     const d = doc.data() || {};
+
     if (d.cashierName) SESSION.cashierName = String(d.cashierName);
     if (d.terminal) SESSION.terminal = String(d.terminal);
+
     hydrateCashierUI();
-  });
+  }, err => console.error("Cashier staff sync error:", err));
 }
 
 function stopRealtimeSync() {
@@ -215,34 +239,43 @@ function stopRealtimeSync() {
   try { FB.unsub.prods?.(); } catch {}
   try { FB.unsub.orders?.(); } catch {}
   try { FB.unsub.staff?.(); } catch {}
+
   FB.unsub = { cats: null, prods: null, orders: null, staff: null };
 }
 
-/* ---------------------- ORDER CACHE / BROADCAST ---------------------- */
 function syncOrdersToLocalCache(orders){
   try {
-    const existing = safeJSON(localStorage.getItem(LS_ORDERS), []);
+    const existing = safeJSON(localStorage.getItem("madira_orders_v1"), []);
     const map = new Map();
-    [...orders, ...(Array.isArray(existing) ? existing : [])].forEach(o => {
-      const key = o.__docId || o.receiptId || `${o.ts}_${Math.random()}`;
+
+    [...(orders || []), ...(Array.isArray(existing) ? existing : [])].forEach(o => {
+      const key = o.__docId || o.receiptId || `${o.ts || o.tsISO || Date.now()}`;
       map.set(key, o);
     });
-    const merged = Array.from(map.values()).sort((a,b)=> new Date(b.ts||b.tsISO||0) - new Date(a.ts||a.tsISO||0));
-    localStorage.setItem(LS_ORDERS, JSON.stringify(merged.slice(0, 5000)));
+
+    const merged = Array.from(map.values()).sort((a,b)=>{
+      return new Date(b.ts || b.tsISO || 0) - new Date(a.ts || a.tsISO || 0);
+    });
+
+    localStorage.setItem("madira_orders_v1", JSON.stringify(merged.slice(0, 5000)));
   } catch {}
 }
 
 function publishOrderToAdmin(order){
   try {
-    const existing = safeJSON(localStorage.getItem(LS_ORDERS), []);
-    const next = [order, ...(Array.isArray(existing) ? existing.filter(o => o.receiptId !== order.receiptId) : [])]
-      .sort((a,b)=> new Date(b.ts||b.tsISO||0) - new Date(a.ts||a.tsISO||0))
-      .slice(0, 5000);
-    localStorage.setItem(LS_ORDERS, JSON.stringify(next));
+    const existing = safeJSON(localStorage.getItem("madira_orders_v1"), []);
+    const next = [
+      order,
+      ...(Array.isArray(existing)
+        ? existing.filter(o => (o.__docId || o.receiptId) !== (order.__docId || order.receiptId))
+        : [])
+    ].sort((a,b)=> new Date(b.ts || b.tsISO || 0) - new Date(a.ts || a.tsISO || 0));
+
+    localStorage.setItem("madira_orders_v1", JSON.stringify(next.slice(0, 5000)));
   } catch {}
 
   try {
-    if ("BroadcastChannel" in window) {
+    if ("BroadcastChannel" in window){
       const ch = new BroadcastChannel("madira_orders");
       ch.postMessage(order);
       ch.close();
@@ -250,11 +283,6 @@ function publishOrderToAdmin(order){
   } catch {}
 }
 
-function safeJSON(str, fallback){
-  try { return JSON.parse(str); } catch { return fallback; }
-}
-
-/* ---------------------- UI FEEDBACK ---------------------- */
 function flashStatus(msg, isError = false) {
   const el = document.getElementById("syncStatus");
   if (!el) return;
@@ -272,35 +300,49 @@ function flashStatus(msg, isError = false) {
   }, 1200);
 }
 
-/* ---------------------- HARD LOGOUT ---------------------- */
 async function hardLogout() {
   try { stopRealtimeSync(); } catch {}
   try { cart = []; renderCart(); } catch {}
 
   try {
     const killPrefixes = ["madira", "mb_", "MB_", "bs_", "BS_"];
-    const killExact = ["madira_auth_v1", "bs_auth_session", "madira_cashier_session_v1", "user", "role", "token", "session"];
+    const killExact = [
+      "madira_auth_v1",
+      "bs_auth_session",
+      "madira_cashier_session_v1",
+      "madira_orders_v1",
+      "user",
+      "role",
+      "token",
+      "session"
+    ];
 
-    killExact.forEach(k => { localStorage.removeItem(k); sessionStorage.removeItem(k); });
+    killExact.forEach(k => {
+      localStorage.removeItem(k);
+      sessionStorage.removeItem(k);
+    });
 
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const k = localStorage.key(i);
       if (k && killPrefixes.some(p => k.startsWith(p))) localStorage.removeItem(k);
     }
+
     for (let i = sessionStorage.length - 1; i >= 0; i--) {
       const k = sessionStorage.key(i);
       if (k && killPrefixes.some(p => k.startsWith(p))) sessionStorage.removeItem(k);
     }
   } catch {}
 
-  try { if (window.firebase?.auth) await firebase.auth().signOut(); } catch {}
+  try {
+    if (window.firebase?.auth) await firebase.auth().signOut();
+  } catch {}
 
   window.location.href = "login.html";
 }
 
-/* ---------------------- TOPBAR + TABS ---------------------- */
 function bindTopbar() {
   const inp = document.getElementById("searchInput");
+
   if (inp) {
     inp.addEventListener("input", () => {
       searchQuery = inp.value.trim();
@@ -318,14 +360,18 @@ function bindTopbar() {
       alert("Scan items first.");
       return;
     }
+
     try {
       flashStatus("SAVING...");
+
       const order = await checkoutAndSave(DEFAULT_PAYMENT_METHOD);
       publishOrderToAdmin(order);
+
       cart = [];
       renderCart();
       refreshSalesView();
       setActiveTab("sales");
+
       flashStatus("COMPLETED");
     } catch (e) {
       console.error(e);
@@ -349,8 +395,10 @@ function bindTopbar() {
   document.addEventListener("click", (e) => {
     const hit = e.target?.closest?.("#logoutBtn");
     if (!hit) return;
+
     e.preventDefault();
     e.stopPropagation();
+
     hardLogout();
   }, true);
 
@@ -399,34 +447,37 @@ function setActiveTab(which) {
   }
 }
 
-/* ---------------------- SIDEBAR CATEGORIES ---------------------- */
 function initSidebarCategories() {
   const wrap = document.getElementById("categoryList");
   if (!wrap) return;
 
   wrap.innerHTML = "";
+
   CATEGORIES.forEach(c => {
     const btn = document.createElement("button");
     btn.className = "catBtn" + (c.name === activeCategory ? " active" : "");
+
     btn.innerHTML = `
       <span class="left">
         <span class="catIcon">${escapeHtml(c.icon || "•")}</span> ${escapeHtml(c.name)}
       </span>
       <span style="opacity:.45">›</span>
     `;
+
     btn.addEventListener("click", () => {
       activeCategory = c.name;
       activeSub = "All";
       activeVariant = "All";
+
       initSidebarCategories();
       initUnifiedFilters();
       renderProducts();
     });
+
     wrap.appendChild(btn);
   });
 }
 
-/* ---------------------- FILTERS ---------------------- */
 function initUnifiedFilters() {
   const row = document.getElementById("subFilterRow");
   if (!row) return;
@@ -437,8 +488,14 @@ function initUnifiedFilters() {
   row.innerHTML = "";
 
   const catProducts = PRODUCTS.filter(p => p.category === activeCategory);
-  const subs = Array.from(new Set(catProducts.map(p => String(p.sub || "").trim()).filter(Boolean)));
-  const variants = Array.from(new Set(catProducts.map(p => String(p.size || "").trim()).filter(Boolean)));
+
+  const subs = Array.from(new Set(
+    catProducts.map(p => String(p.sub || "").trim()).filter(Boolean)
+  ));
+
+  const variants = Array.from(new Set(
+    catProducts.map(p => String(p.size || "").trim()).filter(Boolean)
+  ));
 
   if (activeSub !== "All" && !subs.includes(activeSub)) activeSub = "All";
   if (activeVariant !== "All" && !variants.includes(activeVariant)) activeVariant = "All";
@@ -446,33 +503,41 @@ function initUnifiedFilters() {
   row.appendChild(makePill("All", (activeSub === "All" && activeVariant === "All"), () => {
     activeSub = "All";
     activeVariant = "All";
+
     initUnifiedFilters();
     renderProducts();
   }));
 
-  subs.forEach(s => row.appendChild(makePill(s, activeSub === s, () => {
-    activeSub = s;
-    initUnifiedFilters();
-    renderProducts();
-  })));
+  subs.forEach(s => {
+    row.appendChild(makePill(s, activeSub === s, () => {
+      activeSub = s;
 
-  variants.forEach(v => row.appendChild(makePill(v, activeVariant === v, () => {
-    activeVariant = v;
-    initUnifiedFilters();
-    renderProducts();
-  })));
+      initUnifiedFilters();
+      renderProducts();
+    }));
+  });
+
+  variants.forEach(v => {
+    row.appendChild(makePill(v, activeVariant === v, () => {
+      activeVariant = v;
+
+      initUnifiedFilters();
+      renderProducts();
+    }));
+  });
 }
 
 function makePill(text, isActive, onClick) {
   const b = document.createElement("button");
+
   b.type = "button";
   b.className = "pill" + (isActive ? " active" : "");
   b.textContent = text;
   b.addEventListener("click", onClick);
+
   return b;
 }
 
-/* ---------------------- PRODUCTS GRID ---------------------- */
 function filteredProducts() {
   return PRODUCTS.filter(p => {
     if (p.category !== activeCategory) return false;
@@ -481,10 +546,15 @@ function filteredProducts() {
 
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      const aliases = Array.isArray(p.barcodes) ? p.barcodes.join(" ") : "";
-      const hay = `${p.name || ""} ${p.barcode || ""} ${aliases}`.toLowerCase();
+      const hay = (
+        String(p.name || "") + " " +
+        String(p.barcode || "") + " " +
+        (Array.isArray(p.barcodes) ? p.barcodes.join(" ") : "")
+      ).toLowerCase();
+
       if (!hay.includes(q)) return false;
     }
+
     return true;
   });
 }
@@ -494,11 +564,13 @@ function renderProducts() {
   if (!grid) return;
 
   const list = filteredProducts();
+
   grid.innerHTML = "";
 
   list.forEach((p, i) => {
     const card = document.createElement("div");
     card.className = "productCard";
+
     const imgSrc = getProductImage(p, i + 1);
 
     card.innerHTML = `
@@ -512,19 +584,22 @@ function renderProducts() {
         </div>
       </div>
     `;
+
     card.addEventListener("click", () => addToCart(p.id, 1));
+
     grid.appendChild(card);
   });
 }
 
-/* ---------------------- CART ---------------------- */
 function addToCart(pid, qty = 1) {
   const p = PRODUCTS.find(x => x.id === pid);
   if (!p) return;
 
   const line = cart.find(x => x.id === pid);
-  if (line) line.qty += qty;
-  else {
+
+  if (line) {
+    line.qty += qty;
+  } else {
     cart.push({
       id: p.id,
       name: p.name,
@@ -537,6 +612,7 @@ function addToCart(pid, qty = 1) {
       image: p.image || null
     });
   }
+
   renderCart();
 }
 
@@ -545,7 +621,9 @@ function updateQty(pid, delta) {
   if (!line) return;
 
   line.qty += delta;
+
   if (line.qty <= 0) cart = cart.filter(x => x.id !== pid);
+
   renderCart();
 }
 
@@ -553,6 +631,7 @@ function cartTotals() {
   const subtotal = cart.reduce((s, l) => s + (Number(l.price || 0) * Number(l.qty || 0)), 0);
   const tax = subtotal * TAX_RATE;
   const total = subtotal + tax;
+
   return { subtotal, tax, total };
 }
 
@@ -566,9 +645,11 @@ function renderCart() {
   wrap.innerHTML = "";
 
   if (cart.length === 0) {
-    wrap.innerHTML = `<div style="color:rgba(17,24,39,.55); font-size:12px; padding:12px;">
-      No items added yet. Scan a barcode to add items.
-    </div>`;
+    wrap.innerHTML = `
+      <div style="color:rgba(17,24,39,.55); font-size:12px; padding:12px;">
+        No items added yet. Scan a barcode to add items.
+      </div>
+    `;
   } else {
     cart.forEach((l, i) => {
       const prod = PRODUCTS.find(p => p.id === l.id);
@@ -576,6 +657,7 @@ function renderCart() {
 
       const div = document.createElement("div");
       div.className = "cartItem";
+
       div.innerHTML = `
         <div class="cThumb"><img src="${thumb}" alt=""/></div>
         <div class="cInfo">
@@ -592,36 +674,43 @@ function renderCart() {
 
       div.querySelector('[data-act="minus"]')?.addEventListener("click", () => updateQty(l.id, -1));
       div.querySelector('[data-act="plus"]')?.addEventListener("click", () => updateQty(l.id, +1));
+
       wrap.appendChild(div);
     });
   }
 
   const { subtotal, total } = cartTotals();
+
   document.getElementById("subtotal").textContent = money(subtotal);
   document.getElementById("total").textContent = money(total);
 
   const count = cart.reduce((s, l) => s + l.qty, 0);
   const meta = document.getElementById("orderMeta");
+
   if (meta) meta.textContent = cart.length ? `Items: ${count}` : "#—";
 }
 
-/* ---------------------- BARCODE SCANNER ---------------------- */
-function findProductByAnyBarcode(code){
+function findProductByBarcode(code) {
   const c = String(code || "").trim();
   if (!c) return null;
 
   return PRODUCTS.find(p => {
     const primary = String(p.barcode || "").trim();
+
     if (primary && primary === c) return true;
 
-    const arr = Array.isArray(p.barcodes) ? p.barcodes.map(x => String(x || "").trim()) : [];
-    return arr.includes(c);
+    const aliases = Array.isArray(p.barcodes)
+      ? p.barcodes.map(x => String(x || "").trim())
+      : [];
+
+    return aliases.includes(c);
   }) || null;
 }
 
 function bindBarcodeScanner() {
   let buf = "";
   let timer = null;
+
   const TIMEOUT_MS = 50;
   const MIN_LEN = 4;
 
@@ -633,15 +722,21 @@ function bindBarcodeScanner() {
     if (k === "Enter") {
       if (buf.length >= MIN_LEN) {
         const code = buf;
+
         buf = "";
+
         if (timer) clearTimeout(timer);
         timer = null;
 
-        const found = findProductByAnyBarcode(code);
+        const found = findProductByBarcode(code);
+
         if (found) {
           addToCart(found.id, 1);
           flashStatus(`SCANNED: ${code}`);
-          if (!document.getElementById("viewTerminal")?.classList.contains("active")) setActiveTab("terminal");
+
+          if (!document.getElementById("viewTerminal")?.classList.contains("active")) {
+            setActiveTab("terminal");
+          }
         } else {
           flashStatus(`UNKNOWN: ${code}`, true);
         }
@@ -649,6 +744,7 @@ function bindBarcodeScanner() {
         e.preventDefault();
         e.stopPropagation();
       }
+
       return;
     }
 
@@ -656,13 +752,11 @@ function bindBarcodeScanner() {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => { buf = ""; }, TIMEOUT_MS);
 
-      // Supports numeric and alpha-numeric barcodes.
       if (/^[0-9A-Za-z]$/.test(k)) buf += k;
     }
   }, true);
 }
 
-/* ---------------------- CHECKOUT ---------------------- */
 async function checkoutAndSave(method) {
   if (!FB.enabled) throw new Error("Firebase not available");
 
@@ -683,10 +777,14 @@ async function checkoutAndSave(method) {
     for (let i = 0; i < cart.length; i++) {
       const line = cart[i];
       const pDoc = productDocs[i];
+
       if (!pDoc.exists) throw new Error(`Product removed: ${line.name}`);
 
       const stock = Number(pDoc.data().stock || 0);
-      if (stock < line.qty) throw new Error(`Low stock: ${line.name} (Available: ${stock})`);
+
+      if (stock < line.qty) {
+        throw new Error(`Low stock: ${line.name} (Available: ${stock})`);
+      }
     }
 
     tx.set(metaRef, { posSeq: seq }, { merge: true });
@@ -727,30 +825,43 @@ async function checkoutAndSave(method) {
       terminal: SESSION.terminal,
       cashier: SESSION.cashierName,
       subtotal: round2(subtotal),
-      tax: round2(tax)
+      tax: round2(tax),
+      source: "cashier",
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
     };
 
     tx.set(_ordersRef().doc(orderDocId), order, { merge: true });
-    return { ...order, ts: tsISO, __docId: orderDocId };
+
+    return {
+      ...order,
+      ts: tsISO,
+      tsISO,
+      __docId: orderDocId
+    };
   });
 
   ORDERS.unshift(result);
-  syncOrdersToLocalCache([result]);
+
   return result;
 }
 
-/* ---------------------- SALES VIEW ---------------------- */
 function refreshSalesView() {
   const today = new Date();
   const todayKey = today.toISOString().slice(0, 10);
-  const todays = ORDERS.filter(o => (o.ts || "").slice(0, 10) === todayKey);
+  const todays = ORDERS.filter(o => (o.ts || o.tsISO || "").slice(0, 10) === todayKey);
 
   const salesDateEl = document.getElementById("salesDate");
+
   if (salesDateEl) {
-    salesDateEl.textContent = today.toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "short", day: "numeric" });
+    salesDateEl.textContent = today.toLocaleDateString("en-IN", {
+      weekday: "long",
+      year: "numeric",
+      month: "short",
+      day: "numeric"
+    });
   }
 
-  const totalSales = todays.reduce((s, o) => s + (o.amount || 0), 0);
+  const totalSales = todays.reduce((s, o) => s + (Number(o.amount) || 0), 0);
   const txCount = todays.length;
   const avg = txCount ? totalSales / txCount : 0;
 
@@ -759,13 +870,21 @@ function refreshSalesView() {
   document.getElementById("kpiAvgTicket").textContent = `Avg ${money(avg)} per ticket`;
 
   const units = new Map();
+
   for (const o of todays) {
-    for (const it of (o.items || [])) units.set(it.name, (units.get(it.name) || 0) + it.qty);
+    for (const it of (o.items || [])) {
+      units.set(it.name, (units.get(it.name) || 0) + it.qty);
+    }
   }
 
-  let topName = "—", topUnits = 0;
+  let topName = "—";
+  let topUnits = 0;
+
   for (const [k, v] of units.entries()) {
-    if (v > topUnits) { topUnits = v; topName = k; }
+    if (v > topUnits) {
+      topUnits = v;
+      topName = k;
+    }
   }
 
   document.getElementById("kpiTopSeller").textContent = topName;
@@ -781,16 +900,21 @@ function renderSalesTable(todays) {
 
   const q = document.getElementById("salesSearch")?.value?.trim()?.toLowerCase() || "";
   let list = todays;
-  if (q) list = list.filter(o => (o.receiptId || "").toLowerCase().includes(q));
+
+  if (q) {
+    list = list.filter(o => (o.receiptId || "").toLowerCase().includes(q));
+  }
 
   body.innerHTML = "";
 
   list.forEach(o => {
-    const itemsText = (o.items || []).slice(0, 2).map(i => `${i.qty}x ${i.name}`).join(", ")
+    const itemsText =
+      (o.items || []).slice(0, 2).map(i => `${i.qty}x ${i.name}`).join(", ")
       + ((o.items || []).length > 2 ? `, +${(o.items || []).length - 2} more` : "");
 
     const tr = document.createElement("div");
     tr.className = "tr";
+
     tr.innerHTML = `
       <div>${escapeHtml(o.receiptId)}</div>
       <div>${escapeHtml(o.timeLabel || "—")}</div>
@@ -802,6 +926,7 @@ function renderSalesTable(todays) {
     `;
 
     tr.querySelector(".eyeBtn2")?.addEventListener("click", () => alert(orderDetailsText(o)));
+
     body.appendChild(tr);
   });
 
@@ -813,17 +938,23 @@ document.getElementById("salesSearch")?.addEventListener("input", refreshSalesVi
 
 function renderSalesByHour(todays) {
   const bins = new Array(12).fill(0);
+
   for (const o of todays) {
-    const d = new Date(o.ts);
+    const d = new Date(o.ts || o.tsISO);
     const h = d.getHours();
-    if (h >= 8 && h < 20) bins[h - 8] += (o.amount || 0);
+
+    if (h >= 8 && h < 20) {
+      bins[h - 8] += (Number(o.amount) || 0);
+    }
   }
 
   const max = Math.max(...bins, 1);
   const chart = document.getElementById("chartBars");
+
   if (!chart) return;
 
   chart.innerHTML = "";
+
   bins.forEach(v => {
     const bar = document.createElement("div");
     bar.className = "bar";
@@ -834,9 +965,10 @@ function renderSalesByHour(todays) {
 
 function orderDetailsText(o) {
   const lines = (o.items || []).map(i => `${i.qty}x ${i.name} ${money(i.price * i.qty)}`).join("\n");
+
   return `${SHOP_NAME}
 ${o.receiptId}
-${new Date(o.ts).toLocaleString("en-IN")}
+${new Date(o.ts || o.tsISO).toLocaleString("en-IN")}
 
 ${lines}
 
@@ -858,10 +990,10 @@ function statusBadge(s) {
   return `<span class="badge red">${escapeHtml(s)}</span>`;
 }
 
-/* ---------------------- SHIFT / CASHIER UI ---------------------- */
 function setShiftProgress(ratio) {
   const fill = document.getElementById("shiftFill");
   const meta = document.getElementById("shiftMeta");
+
   if (fill) fill.style.width = `${Math.max(0, Math.min(1, ratio)) * 100}%`;
   if (meta) meta.textContent = "8h 12m remaining";
 }
@@ -876,7 +1008,6 @@ function hydrateCashierUI() {
   if (av) av.textContent = initials(SESSION.cashierName) || "MB";
 }
 
-/* ---------------------- UTILITIES ---------------------- */
 function escapeHtml(str) {
   return String(str || "")
     .replaceAll("&", "&amp;")
@@ -888,10 +1019,16 @@ function escapeHtml(str) {
 
 function money(n) {
   const v = Number(n || 0);
-  return v.toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 });
+  return v.toLocaleString("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 2
+  });
 }
 
-function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
 
 function initials(name) {
   return String(name || "")
@@ -909,6 +1046,7 @@ function getProductImage(p, seed) {
 
 function productImgDataURI(seed) {
   const color = seed % 2 ? "#f6c54a" : "#d8a82f";
+
   const svg =
 `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
   <defs>
@@ -920,5 +1058,10 @@ function productImgDataURI(seed) {
   <rect width="120" height="120" rx="22" fill="url(#g)"/>
   <text x="50%" y="54%" text-anchor="middle" dominant-baseline="middle" font-size="52">🍺</text>
 </svg>`;
+
   return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+}
+
+function safeJSON(str, fallback){
+  try { return JSON.parse(str); } catch { return fallback; }
 }
